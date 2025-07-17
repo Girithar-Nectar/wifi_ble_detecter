@@ -119,7 +119,7 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
-    WidgetsBinding.instance.removeObserver(this); // Unregister as observer
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 }
