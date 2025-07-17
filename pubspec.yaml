@@ -1,0 +1,54 @@
+name: wifi_ble_detector
+description: A Flutter app to detect nearby WiFi and Bluetooth devices with distance tracking and notifications.
+
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  
+  # State Management
+  get: ^4.6.6
+  
+  # WiFi and Bluetooth Detection
+  wifi_scan: ^0.4.0
+  flutter_blue_plus: ^1.35.5
+
+  # Notifications
+  flutter_local_notifications: ^19.3.0
+  
+  # Background Processing
+  workmanager: ^0.8.0
+  
+  # Permissions
+  permission_handler: ^11.3.0
+  
+  # Location Services
+  geolocator: ^11.0.0
+
+  #Logger
+  logger: ^2.6.0
+  
+  # UI Components
+  cupertino_icons: ^1.0.2
+
+  #Tts
+  flutter_tts: ^4.2.3
+
+  #Shared Prefs
+  shared_preferences: ^2.5.3
+
+  connectivity_plus: ^6.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true 
