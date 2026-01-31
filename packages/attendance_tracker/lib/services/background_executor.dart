@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
@@ -56,22 +57,25 @@ class BackgroundExecutor {
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(channel);
 
-    // Explicitly create MAX-importance channels for entry/exit (v5 entry to force reset)
+    // Explicitly create MAX-importance channels for entry/exit (v8/v7 to force reset after incorrect config)
+    // NOTE: enableVibration must be true for the system to honor custom patterns
     const AndroidNotificationChannel entryChannel = AndroidNotificationChannel(
-      'attendance_entry_v5',
+      'attendance_entry_v8',
       'Entry Alerts',
       description: 'Triggered when entering the office zone',
       importance: Importance.max,
       playSound: true,
       sound: RawResourceAndroidNotificationSound('inzone'),
+      enableVibration: true,
     );
     const AndroidNotificationChannel exitChannel = AndroidNotificationChannel(
-      'attendance_exit_v4',
+      'attendance_exit_v7',
       'Exit Alerts',
       description: 'Triggered when leaving the office zone',
       importance: Importance.max,
       playSound: true,
       sound: RawResourceAndroidNotificationSound('outofzone'),
+      enableVibration: true,
     );
 
     await _notifications
@@ -178,21 +182,24 @@ class BackgroundExecutor {
       await _notifications.initialize(const InitializationSettings(android: androidSettings));
 
       // CRITICAL: Recreate notification channels in background isolate
+      // NOTE: enableVibration must be true for the system to honor custom patterns
       const AndroidNotificationChannel entryChannel = AndroidNotificationChannel(
-        'attendance_entry_v5',
+        'attendance_entry_v8',
         'Entry Alerts',
         description: 'Triggered when entering the office zone',
         importance: Importance.max,
         playSound: true,
         sound: RawResourceAndroidNotificationSound('inzone'),
+        enableVibration: true,
       );
       const AndroidNotificationChannel exitChannel = AndroidNotificationChannel(
-        'attendance_exit_v4',
+        'attendance_exit_v7',
         'Exit Alerts',
         description: 'Triggered when leaving the office zone',
         importance: Importance.max,
         playSound: true,
         sound: RawResourceAndroidNotificationSound('outofzone'),
+        enableVibration: true,
       );
 
       await _notifications
@@ -376,7 +383,7 @@ class BackgroundExecutor {
       _showNotification(
         config.welcomeTitle,
         "${config.welcomeBody}$source",
-        channelId: 'attendance_entry_v5',
+        channelId: 'attendance_entry_v8',
         channelName: 'Entry Alerts',
         sound: config.welcomeSound,
         vibrationPattern: config.welcomeVibration,
@@ -387,7 +394,7 @@ class BackgroundExecutor {
       _showNotification(
         config.outOfZoneTitle,
         config.outOfZoneBody,
-        channelId: 'attendance_exit_v4',
+        channelId: 'attendance_exit_v7',
         channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,
@@ -410,7 +417,7 @@ class BackgroundExecutor {
       _showNotification(
         config.shiftEndedTitle,
         config.shiftEndedBody,
-        channelId: 'attendance_exit_v4',
+        channelId: 'attendance_exit_v7',
         channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,
@@ -450,7 +457,7 @@ class BackgroundExecutor {
           icon: '@mipmap/ic_launcher',
           vibrationPattern: pattern,
           sound: soundFile,
-          enableVibration: true,
+          enableVibration: pattern != null, // Only enable if we have a custom pattern
         ),
         iOS: DarwinNotificationDetails(
           presentAlert: true,
