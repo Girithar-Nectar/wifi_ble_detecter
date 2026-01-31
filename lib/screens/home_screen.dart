@@ -74,7 +74,7 @@ class _HomeScreenState extends State<HomeScreen> {
         outOfZoneVibration: [0, 200, 100, 200], // Rapid pulses for exit
         welcomeSound: 'inzone',
         outOfZoneSound: 'outofzone',
-        enableTts: true,
+        enableTts: false,
       ));
 
       // 2. Hide loading screen early (UI feels snappy)

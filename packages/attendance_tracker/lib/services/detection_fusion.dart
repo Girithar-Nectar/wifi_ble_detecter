@@ -152,20 +152,54 @@ class DetectionFusion {
             );
           }
 
-          // startScan with timeout completes when scan FINISHES. No extra delay needed.
-          await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
+          // Optimized Scan: 5s timeout + Low Latency (Android)
+          // 1. Stop any existing scan to avoid "scan already in progress" errors
+          try {
+            await FlutterBluePlus.stopScan();
+          } catch (_) {}
+
+          // 2. Start scan
+          await FlutterBluePlus.startScan(
+            timeout: const Duration(seconds: 5),
+            androidScanMode: AndroidScanMode.lowLatency,
+          );
+
+          // 3. WAIT for the scan to actually finish (timeout reached)
+          // In FlutterBluePlus 2.x, startScan completes when the scan STARTS.
+          await FlutterBluePlus.isScanning
+              .where((val) => val == false)
+              .first
+              .timeout(const Duration(seconds: 7), onTimeout: () => false);
 
           final results = FlutterBluePlus.lastScanResults;
           final normConfigMacs = config.bleMACs.map(_normalize).toList();
 
+          // Log top detections for debugging
+          final topDetections = List<ScanResult>.from(results)..sort((a, b) => b.rssi.compareTo(a.rssi));
+          if (topDetections.isNotEmpty) {
+            log += "BLE Detections (${results.length}):\n";
+            for (var i = 0; i < (topDetections.length < 3 ? topDetections.length : 3); i++) {
+              final r = topDetections[i];
+              final name = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
+              log += "  - $name: ${r.rssi} dBm\n";
+            }
+          }
+
           for (var r in results) {
             final normMac = _normalize(r.device.remoteId.str);
-            // Safe name check
             final deviceName = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
+            final normName = _normalize(deviceName);
 
-            if (config.bleDeviceNames.contains(deviceName) || normConfigMacs.contains(normMac)) {
+            bool isMatch = false;
+            if (config.bleDeviceNames.any((n) => _normalize(n) == normName)) {
+              isMatch = true;
+            } else if (normConfigMacs.contains(normMac)) {
+              isMatch = true;
+            }
+
+            if (isMatch) {
               matched = true;
-              log += "BLE: MATCH! $deviceName ($normMac)\n";
+              log += "BLE: MATCH! $deviceName ($normMac) at ${r.rssi} dBm\n";
               break;
             }
           }

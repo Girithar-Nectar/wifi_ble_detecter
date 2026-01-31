@@ -248,6 +248,8 @@ class BackgroundExecutor {
         _showNotification(
           'Detection Paused',
           'All tracking sensors (GPS, Wi-Fi, Bluetooth) are turned OFF. Please enable at least one to record attendance.',
+          channelId: 'attendance_system',
+          channelName: 'System Alerts',
           enableTts: config.enableTts,
         );
       } else {
@@ -307,6 +309,8 @@ class BackgroundExecutor {
       _showNotification(
         config.welcomeTitle,
         "${config.welcomeBody}$source",
+        channelId: 'attendance_entry',
+        channelName: 'Entry Alerts',
         sound: config.welcomeSound,
         vibrationPattern: config.welcomeVibration,
         enableTts: config.enableTts,
@@ -316,6 +320,8 @@ class BackgroundExecutor {
       _showNotification(
         config.outOfZoneTitle,
         config.outOfZoneBody,
+        channelId: 'attendance_exit',
+        channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,
         enableTts: config.enableTts,
@@ -337,6 +343,8 @@ class BackgroundExecutor {
       _showNotification(
         config.shiftEndedTitle,
         config.shiftEndedBody,
+        channelId: 'attendance_exit',
+        channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,
         enableTts: config.enableTts,
@@ -348,6 +356,8 @@ class BackgroundExecutor {
   static void _showNotification(
     String title,
     String body, {
+    required String channelId,
+    required String channelName,
     String? sound,
     List<int>? vibrationPattern,
     bool enableTts = false,
@@ -365,8 +375,8 @@ class BackgroundExecutor {
       body,
       NotificationDetails(
         android: AndroidNotificationDetails(
-          'attendance_alerts',
-          'Attendance Alerts',
+          channelId,
+          channelName,
           importance: Importance.high,
           priority: Priority.high,
           icon: '@mipmap/ic_launcher',
