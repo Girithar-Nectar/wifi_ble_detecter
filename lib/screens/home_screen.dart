@@ -78,30 +78,37 @@ class _HomeScreenState extends State<HomeScreen> {
         scanIntervalSeconds: 2, // Scan every 30 seconds for better responsiveness
       ));
 
-      // 2. Hide loading screen early (UI feels snappy)
-      if (mounted) {
-        setState(() => _isInitializing = false);
-      }
-
-      // 3. Handle Tracking & Permissions (First-run aware)
+      // 2. Handle Tracking & Permissions (First-run aware)
       final hasPerms = await _tracker.hasPermissions();
+      debugPrint('AttendanceTracker: Has all permissions: $hasPerms');
+
       if (hasPerms) {
         // Normal path: start immediately
+        debugPrint('AttendanceTracker: Starting tracking...');
         await _tracker.startTracking();
         await _loadInitialStatus();
       } else {
         // First run or permissions missing: request and then start
         debugPrint('AttendanceTracker: Permissions missing, requesting...');
         final granted = await _tracker.requestPermissions();
+        debugPrint('AttendanceTracker: Permissions granted: $granted');
+
         if (granted) {
+          debugPrint('AttendanceTracker: Starting tracking after permission grant...');
           await _tracker.startTracking();
           await _loadInitialStatus();
         } else {
           debugPrint('AttendanceTracker: Critical permissions denied by user.');
         }
       }
-    } catch (e) {
+
+      // 3. Hide loading screen after everything is done
+      if (mounted) {
+        setState(() => _isInitializing = false);
+      }
+    } catch (e, stackTrace) {
       debugPrint('Init Error: $e');
+      debugPrint('Stack trace: $stackTrace');
       if (mounted) {
         setState(() => _isInitializing = false);
       }

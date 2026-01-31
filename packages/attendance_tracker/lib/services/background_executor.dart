@@ -56,20 +56,22 @@ class BackgroundExecutor {
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(channel);
 
-    // Explicitly create MAX-importance channels for entry/exit (v3 to force reset)
+    // Explicitly create MAX-importance channels for entry/exit (v5 entry to force reset)
     const AndroidNotificationChannel entryChannel = AndroidNotificationChannel(
-      'attendance_entry_v3',
+      'attendance_entry_v5',
       'Entry Alerts',
       description: 'Triggered when entering the office zone',
-      importance: Importance.max, // MAX for heads-up
+      importance: Importance.max,
       playSound: true,
+      sound: RawResourceAndroidNotificationSound('inzone'),
     );
     const AndroidNotificationChannel exitChannel = AndroidNotificationChannel(
-      'attendance_exit_v3',
+      'attendance_exit_v4',
       'Exit Alerts',
       description: 'Triggered when leaving the office zone',
-      importance: Importance.max, // MAX for heads-up
+      importance: Importance.max,
       playSound: true,
+      sound: RawResourceAndroidNotificationSound('outofzone'),
     );
 
     await _notifications
@@ -174,6 +176,31 @@ class BackgroundExecutor {
       // Ensure notifications are initialized even if onStart is called alone (AOT entry point)
       const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
       await _notifications.initialize(const InitializationSettings(android: androidSettings));
+
+      // CRITICAL: Recreate notification channels in background isolate
+      const AndroidNotificationChannel entryChannel = AndroidNotificationChannel(
+        'attendance_entry_v5',
+        'Entry Alerts',
+        description: 'Triggered when entering the office zone',
+        importance: Importance.max,
+        playSound: true,
+        sound: RawResourceAndroidNotificationSound('inzone'),
+      );
+      const AndroidNotificationChannel exitChannel = AndroidNotificationChannel(
+        'attendance_exit_v4',
+        'Exit Alerts',
+        description: 'Triggered when leaving the office zone',
+        importance: Importance.max,
+        playSound: true,
+        sound: RawResourceAndroidNotificationSound('outofzone'),
+      );
+
+      await _notifications
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(entryChannel);
+      await _notifications
+          .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+          ?.createNotificationChannel(exitChannel);
 
       // Run initial detection immediately
       try {
@@ -349,7 +376,7 @@ class BackgroundExecutor {
       _showNotification(
         config.welcomeTitle,
         "${config.welcomeBody}$source",
-        channelId: 'attendance_entry_v3',
+        channelId: 'attendance_entry_v5',
         channelName: 'Entry Alerts',
         sound: config.welcomeSound,
         vibrationPattern: config.welcomeVibration,
@@ -360,7 +387,7 @@ class BackgroundExecutor {
       _showNotification(
         config.outOfZoneTitle,
         config.outOfZoneBody,
-        channelId: 'attendance_exit_v3',
+        channelId: 'attendance_exit_v4',
         channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,
@@ -383,7 +410,7 @@ class BackgroundExecutor {
       _showNotification(
         config.shiftEndedTitle,
         config.shiftEndedBody,
-        channelId: 'attendance_exit_v3',
+        channelId: 'attendance_exit_v4',
         channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,

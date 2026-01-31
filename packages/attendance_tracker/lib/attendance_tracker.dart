@@ -18,33 +18,60 @@ class AttendanceTracker {
 
   /// Check if all critical permissions (Location, Bluetooth) are granted.
   Future<bool> hasPermissions() async {
-    final location = await Permission.location.isGranted;
-    final bluetooth = await Permission.bluetoothScan.isGranted;
-    final notification = await Permission.notification.isGranted;
-    return location && bluetooth && notification;
+    try {
+      final location = await Permission.location.isGranted;
+      final locationAlways = await Permission.locationAlways.isGranted;
+      final bluetooth = await Permission.bluetoothScan.isGranted;
+      final notification = await Permission.notification.isGranted;
+      return location && locationAlways && bluetooth && notification;
+    } catch (e) {
+      print('AttendanceTracker: Error checking permissions: $e');
+      return false;
+    }
   }
 
   /// Request all necessary permissions and return true if critical ones are granted.
   Future<bool> requestPermissions() async {
-    // Request location first as it's most critical
-    final locStatus = await Permission.location.request();
-    if (locStatus.isDenied) return false;
+    try {
+      print('AttendanceTracker: Starting permission requests...');
 
-    // Request notification
-    await Permission.notification.request();
+      // Request foreground location first (Android 14 requirement)
+      print('AttendanceTracker: Requesting foreground location...');
+      final locStatus = await Permission.location.request();
+      print('AttendanceTracker: Foreground location status: $locStatus');
 
-    // Request background location (often secondary/separate dialog)
-    await Permission.locationAlways.request();
+      if (locStatus.isDenied || locStatus.isPermanentlyDenied) {
+        print('AttendanceTracker: Foreground location denied');
+        return false;
+      }
 
-    // Request Bluetooth group
-    await [
-      Permission.bluetooth,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-      Permission.bluetoothAdvertise,
-    ].request();
+      // Only request background location AFTER foreground is granted (Android 14)
+      if (locStatus.isGranted) {
+        print('AttendanceTracker: Requesting background location...');
+        final bgStatus = await Permission.locationAlways.request();
+        print('AttendanceTracker: Background location status: $bgStatus');
+      }
 
-    return hasPermissions();
+      // Request Bluetooth group
+      print('AttendanceTracker: Requesting Bluetooth permissions...');
+      await [
+        Permission.bluetooth,
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.bluetoothAdvertise,
+      ].request();
+
+      // Request notification LAST (may hang on some devices if first)
+      print('AttendanceTracker: Requesting notification permission...');
+      await Permission.notification.request();
+
+      final hasAll = await hasPermissions();
+      print('AttendanceTracker: All permissions granted: $hasAll');
+      return hasAll;
+    } catch (e) {
+      print('AttendanceTracker: Error requesting permissions: $e');
+      return false;
+    }
   }
 
   /// Check if all required services (GPS, Wi-Fi, Bluetooth) are enabled hardware-wise.
