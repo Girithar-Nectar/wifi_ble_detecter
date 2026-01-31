@@ -1,48 +1,50 @@
+import 'package:attendance_tracker/attendance_tracker.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:workmanager/workmanager.dart';
 import 'controllers/device_controller.dart';
 import 'controllers/notification_controller.dart';
 import 'helper/logger.dart';
 import 'screens/home_screen.dart';
-import 'services/background_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize notifications first
-  final notificationController = NotificationController();
+  // Initialize notifications
   await NotificationController.initialize();
 
-  // Initialize background service
-  await Workmanager().initialize(callbackDispatcher);
-  await Workmanager().registerPeriodicTask(
-    "device_detection",
-    "detectDevices",
-    frequency: const Duration(minutes: 1),
-    constraints: Constraints(
-      networkType: NetworkType.connected,
-    ),
-  );
+  // Initialize and Start the Attendance Tracker Plugin
+  final tracker = AttendanceTracker();
+  await tracker.initialize(AttendanceConfig(
+    officeLatitude: 12.9716, // Sample: Bangalore Office
+    officeLongitude: 77.5946,
+    geofenceRadius: 100.0,
+    wifiSSIDs: ['Office_WiFi'],
+    bleDeviceNames: ['Attendance_Beacon'],
+    shiftStart: const TimeOfDay(hour: 9, minute: 0),
+    shiftEnd: const TimeOfDay(hour: 18, minute: 0),
+  ));
+
+  await tracker.startTracking();
 
   // Request permissions
   await _requestPermissions();
 
-  // Register controllers before running the app
-  Get.put(notificationController); // Register NotificationController
-  Get.put(DeviceController()); // Register DeviceController
+  // Register controllers
+  Get.put(NotificationController());
+  Get.put(DeviceController());
 
   runApp(const MyApp());
 }
 
 Future<void> _requestPermissions() async {
   await Permission.location.request();
-  await Permission.backgroundRefresh.request();
+  if (await Permission.location.isGranted) {
+    await Permission.locationAlways.request();
+  }
   await Permission.bluetooth.request();
   await Permission.bluetoothScan.request();
   await Permission.bluetoothConnect.request();
-  await Permission.bluetoothAdvertise.request();
   await Permission.notification.request();
 }
 
@@ -61,28 +63,22 @@ class MyApp extends StatelessWidget {
       home: const MyHomePage(),
     );
   }
-
-
 }
 
 class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key,});
-
+  const MyHomePage({
+    super.key,
+  });
 
   @override
   State<MyHomePage> createState() => _MyHomePageState();
 }
 
-
 class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
-
-
   @override
   Widget build(BuildContext context) {
     return const HomeScreen();
   }
-
-
 
   @override
   void initState() {
@@ -90,7 +86,6 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
     super.initState();
   }
-
 
   ///Flutter LifeCycleState
   @override
@@ -116,11 +111,9 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     }
   }
 
-
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 }
-

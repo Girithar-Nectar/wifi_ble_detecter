@@ -4,7 +4,6 @@ import '../controllers/device_controller.dart';
 import '../controllers/notification_controller.dart';
 import '../widgets/device_card.dart';
 import '../widgets/status_card.dart';
-import '../services/background_service.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
@@ -71,15 +70,9 @@ class HomeScreen extends StatelessWidget {
                     children: [
                       StatusCard(
                         title: 'Scanning Status',
-                        icon: deviceController.isScanning.value
-                            ? Icons.radar
-                            : Icons.radar_outlined,
-                        color: deviceController.isScanning.value
-                            ? Colors.green
-                            : Colors.grey,
-                        subtitle: deviceController.isScanning.value
-                            ? 'Scanning Active'
-                            : 'Scanning Stopped',
+                        icon: deviceController.isScanning.value ? Icons.radar : Icons.radar_outlined,
+                        color: deviceController.isScanning.value ? Colors.green : Colors.grey,
+                        subtitle: deviceController.isScanning.value ? 'Scanning Active' : 'Scanning Stopped',
                       ),
                       const SizedBox(height: 12),
                       Row(
@@ -91,12 +84,8 @@ class HomeScreen extends StatelessWidget {
                               },
                               child: StatusCard(
                                 title: 'WiFi',
-                                icon: deviceController.isWifiEnabled.value
-                                    ? Icons.wifi
-                                    : Icons.wifi_off,
-                                color: deviceController.selectedFilter.value == 'wifi'
-                                    ? Colors.blue
-                                    : Colors.grey,
+                                icon: deviceController.isWifiEnabled.value ? Icons.wifi : Icons.wifi_off,
+                                color: deviceController.selectedFilter.value == 'wifi' ? Colors.blue : Colors.grey,
                                 subtitle: '${deviceController.getDeviceCountByType('wifi')} networks',
                               ),
                             ),
@@ -110,9 +99,8 @@ class HomeScreen extends StatelessWidget {
                               child: StatusCard(
                                 title: 'BLE Devices',
                                 icon: Icons.sensors,
-                                color: deviceController.selectedFilter.value == 'ble_device'
-                                    ? Colors.purple
-                                    : Colors.grey,
+                                color:
+                                    deviceController.selectedFilter.value == 'ble_device' ? Colors.purple : Colors.grey,
                                 subtitle: '${deviceController.getDeviceCountByType('ble_device')} devices',
                               ),
                             ),
@@ -123,7 +111,6 @@ class HomeScreen extends StatelessWidget {
                   ),
                 ),
               ),
-
               if (deviceController.isScanning.value && !hasScanned.value)
                 const SliverFillRemaining(
                   child: Center(
@@ -140,11 +127,10 @@ class HomeScreen extends StatelessWidget {
                     ),
                   ),
                 ),
-
               if (devices.isNotEmpty)
                 SliverList(
                   delegate: SliverChildBuilderDelegate(
-                        (context, index) {
+                    (context, index) {
                       final device = devices[index];
                       return Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 4.0),
@@ -154,7 +140,6 @@ class HomeScreen extends StatelessWidget {
                     childCount: devices.length,
                   ),
                 ),
-
               if (hasNoData && hasScanned.value)
                 SliverFillRemaining(
                   child: Center(
@@ -170,21 +155,20 @@ class HomeScreen extends StatelessWidget {
                         Text(
                           'No ${deviceController.selectedFilter.value == 'wifi' ? 'WiFi Networks' : 'BLE Devices'}',
                           style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                            color: Colors.grey[600],
-                          ),
+                                color: Colors.grey[600],
+                              ),
                         ),
                         const SizedBox(height: 8),
                         Text(
                           'No devices detected. Try switching filters or pull to refresh.',
                           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Colors.grey[500],
-                          ),
+                                color: Colors.grey[500],
+                              ),
                         ),
                       ],
                     ),
                   ),
                 ),
-
               const SliverToBoxAdapter(child: SizedBox(height: 100)),
             ],
           );
