@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+// Attendance Configuration Model
 
 class AttendanceConfig {
   /// Latitude of the office center.
@@ -13,14 +13,20 @@ class AttendanceConfig {
   /// List of Wi-Fi SSIDs that confirm presence.
   final List<String> wifiSSIDs;
 
+  /// List of Wi-Fi BSSIDs (MAC Addresses) that confirm presence.
+  final List<String> wifiBSSIDs;
+
   /// List of BLE Device Names that confirm presence.
   final List<String> bleDeviceNames;
 
-  /// The time when the shift starts (e.g., 09:00).
-  final TimeOfDay shiftStart;
+  /// List of BLE MAC Addresses (or Platform IDs) that confirm presence.
+  final List<String> bleMACs;
 
-  /// The time when the shift ends (e.g., 18:00).
-  final TimeOfDay shiftEnd;
+  /// The time when the shift starts (milliseconds from start of day).
+  final int shiftStartMs;
+
+  /// The time when the shift ends (milliseconds from start of day).
+  final int shiftEndMs;
 
   /// Optional: A URL to hit for automatic check-in/check-out.
   final String? apiEndpoint;
@@ -41,9 +47,11 @@ class AttendanceConfig {
     required this.officeLongitude,
     this.geofenceRadius = 100.0,
     this.wifiSSIDs = const [],
+    this.wifiBSSIDs = const [],
     this.bleDeviceNames = const [],
-    required this.shiftStart,
-    required this.shiftEnd,
+    this.bleMACs = const [],
+    required this.shiftStartMs,
+    required this.shiftEndMs,
     this.apiEndpoint,
     this.apiHeaders,
     this.welcomeTitle = 'Welcome!',
@@ -60,11 +68,11 @@ class AttendanceConfig {
       'officeLongitude': officeLongitude,
       'geofenceRadius': geofenceRadius,
       'wifiSSIDs': wifiSSIDs,
+      'wifiBSSIDs': wifiBSSIDs,
       'bleDeviceNames': bleDeviceNames,
-      'shiftStartHour': shiftStart.hour,
-      'shiftStartMinute': shiftStart.minute,
-      'shiftEndHour': shiftEnd.hour,
-      'shiftEndMinute': shiftEnd.minute,
+      'bleMACs': bleMACs,
+      'shiftStartMs': shiftStartMs,
+      'shiftEndMs': shiftEndMs,
       'apiEndpoint': apiEndpoint,
       'apiHeaders': apiHeaders,
       'welcomeTitle': welcomeTitle,
@@ -81,10 +89,12 @@ class AttendanceConfig {
       officeLatitude: json['officeLatitude'],
       officeLongitude: json['officeLongitude'],
       geofenceRadius: json['geofenceRadius'],
-      wifiSSIDs: List<String>.from(json['wifiSSIDs']),
-      bleDeviceNames: List<String>.from(json['bleDeviceNames']),
-      shiftStart: TimeOfDay(hour: json['shiftStartHour'], minute: json['shiftStartMinute']),
-      shiftEnd: TimeOfDay(hour: json['shiftEndHour'], minute: json['shiftEndMinute']),
+      wifiSSIDs: List<String>.from(json['wifiSSIDs'] ?? []),
+      wifiBSSIDs: List<String>.from(json['wifiBSSIDs'] ?? []),
+      bleDeviceNames: List<String>.from(json['bleDeviceNames'] ?? []),
+      bleMACs: List<String>.from(json['bleMACs'] ?? []),
+      shiftStartMs: json['shiftStartMs'],
+      shiftEndMs: json['shiftEndMs'],
       apiEndpoint: json['apiEndpoint'],
       apiHeaders: json['apiHeaders'] != null ? Map<String, String>.from(json['apiHeaders']) : null,
       welcomeTitle: json['welcomeTitle'] ?? 'Welcome!',

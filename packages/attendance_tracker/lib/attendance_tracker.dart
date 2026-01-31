@@ -1,8 +1,11 @@
 import 'dart:async';
-export 'models/attendance_config.dart';
-import 'models/attendance_config.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
 import 'services/background_executor.dart';
-export 'services/detection_fusion.dart' show DetectionResult;
+import 'services/detection_fusion.dart';
+import 'models/attendance_config.dart';
+
+export 'models/attendance_config.dart';
+export 'services/detection_fusion.dart';
 
 class AttendanceTracker {
   static final AttendanceTracker _instance = AttendanceTracker._internal();
@@ -25,8 +28,41 @@ class AttendanceTracker {
     await BackgroundExecutor.stop();
   }
 
+  /// Manually trigger a detection scan immediately.
+  Future<void> forceScan() async {
+    await BackgroundExecutor.forceScan();
+  }
+
+  /// A stream of detection results as they occur in the background.
+  Stream<DetectionResult> get onResult {
+    return FlutterBackgroundService().on('onUpdate').map((event) {
+      return _mapToResult(event!);
+    });
+  }
+
   /// Manually check the current status (In-Zone/Out-of-Zone).
+  Future<DetectionResult?> getLastResult() async {
+    return await BackgroundExecutor.getLastResult();
+  }
+
   Future<bool> isInZone() async {
-    return await BackgroundExecutor.checkCurrentStatus();
+    final result = await BackgroundExecutor.getLastResult();
+    return result?.isInZone ?? false;
+  }
+
+  DetectionResult _mapToResult(Map<String, dynamic> map) {
+    return DetectionResult(
+      isInZone: map['isInZone'],
+      byGps: map['byGps'],
+      byWifi: map['byWifi'],
+      byBle: map['byBle'],
+      distance: map['distance'],
+      diagnosticLog: map['diagnosticLog'] ?? "",
+      status: ServiceStatus(
+        isGpsEnabled: map['status']['isGpsEnabled'],
+        isWifiEnabled: map['status']['isWifiEnabled'],
+        isBleEnabled: map['status']['isBleEnabled'],
+      ),
+    );
   }
 }
