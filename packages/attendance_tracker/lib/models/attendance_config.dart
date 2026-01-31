@@ -1,11 +1,8 @@
 // Attendance Configuration Model
 
 class AttendanceConfig {
-  /// Latitude of the office center.
-  final double officeLatitude;
-
-  /// Longitude of the office center.
-  final double officeLongitude;
+  /// List of office locations in WKT POINT format: "POINT(longitude latitude)"
+  final List<String> officePoints;
 
   /// Radius around the office center in meters for the geofence.
   final double geofenceRadius;
@@ -42,9 +39,23 @@ class AttendanceConfig {
   final String shiftEndedTitle;
   final String shiftEndedBody;
 
+  /// Custom vibration pattern for welcome [wait, dash, wait, dash...].
+  final List<int>? welcomeVibration;
+
+  /// Custom vibration pattern for out of zone.
+  final List<int>? outOfZoneVibration;
+
+  /// Custom sound for welcome (no extension for Android, with extension for iOS).
+  final String? welcomeSound;
+
+  /// Custom sound for out of zone.
+  final String? outOfZoneSound;
+
+  /// Whether to speak the notification content aloud using TTS.
+  final bool enableTts;
+
   AttendanceConfig({
-    required this.officeLatitude,
-    required this.officeLongitude,
+    required this.officePoints,
     this.geofenceRadius = 100.0,
     this.wifiSSIDs = const [],
     this.wifiBSSIDs = const [],
@@ -60,12 +71,16 @@ class AttendanceConfig {
     this.outOfZoneBody = 'You left the office. Don\'t forget to take a break or checkout.',
     this.shiftEndedTitle = 'Shift Ended',
     this.shiftEndedBody = 'You are outside shift hours. Automatically checking you out.',
+    this.welcomeVibration,
+    this.outOfZoneVibration,
+    this.welcomeSound,
+    this.outOfZoneSound,
+    this.enableTts = false,
   });
 
   Map<String, dynamic> toJson() {
     return {
-      'officeLatitude': officeLatitude,
-      'officeLongitude': officeLongitude,
+      'officePoints': officePoints,
       'geofenceRadius': geofenceRadius,
       'wifiSSIDs': wifiSSIDs,
       'wifiBSSIDs': wifiBSSIDs,
@@ -81,13 +96,17 @@ class AttendanceConfig {
       'outOfZoneBody': outOfZoneBody,
       'shiftEndedTitle': shiftEndedTitle,
       'shiftEndedBody': shiftEndedBody,
+      'welcomeVibration': welcomeVibration,
+      'outOfZoneVibration': outOfZoneVibration,
+      'welcomeSound': welcomeSound,
+      'outOfZoneSound': outOfZoneSound,
+      'enableTts': enableTts,
     };
   }
 
   factory AttendanceConfig.fromJson(Map<String, dynamic> json) {
     return AttendanceConfig(
-      officeLatitude: json['officeLatitude'],
-      officeLongitude: json['officeLongitude'],
+      officePoints: List<String>.from(json['officePoints'] ?? []),
       geofenceRadius: json['geofenceRadius'],
       wifiSSIDs: List<String>.from(json['wifiSSIDs'] ?? []),
       wifiBSSIDs: List<String>.from(json['wifiBSSIDs'] ?? []),
@@ -103,6 +122,26 @@ class AttendanceConfig {
       outOfZoneBody: json['outOfZoneBody'] ?? 'You left the office. Don\'t forget to take a break or checkout.',
       shiftEndedTitle: json['shiftEndedTitle'] ?? 'Shift Ended',
       shiftEndedBody: json['shiftEndedBody'] ?? 'You are outside shift hours. Automatically checking you out.',
+      welcomeVibration: json['welcomeVibration'] != null ? List<int>.from(json['welcomeVibration']) : null,
+      outOfZoneVibration: json['outOfZoneVibration'] != null ? List<int>.from(json['outOfZoneVibration']) : null,
+      welcomeSound: json['welcomeSound'],
+      outOfZoneSound: json['outOfZoneSound'],
+      enableTts: json['enableTts'] ?? false,
     );
+  }
+
+  /// Parses a WKT POINT string "POINT(long lat)" into a [MapEntry] of latitude and longitude.
+  static MapEntry<double, double>? parseWktPoint(String wkt) {
+    try {
+      final match = RegExp(r"POINT\s*\(\s*(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s*\)", caseSensitive: false).firstMatch(wkt);
+      if (match != null) {
+        final lon = double.parse(match.group(1)!);
+        final lat = double.parse(match.group(2)!);
+        return MapEntry(lat, lon);
+      }
+    } catch (e) {
+      // Ignore parse errors
+    }
+    return null;
   }
 }

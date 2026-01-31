@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:attendance_tracker/attendance_tracker.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -14,8 +13,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final _tracker = AttendanceTracker();
   DetectionResult? _lastResult;
   StreamSubscription? _resultSubscription;
+  Timer? _statusTimer;
   bool _isManualScanning = false;
   bool _isInitializing = true;
+  ServiceStatus? _currentHardwareStatus;
 
   @override
   void initState() {
@@ -27,6 +28,17 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() {
           _lastResult = result;
           _isManualScanning = false;
+          _currentHardwareStatus = result.status;
+        });
+      }
+    });
+
+    // Periodically check hardware status for enforcement
+    _statusTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      final status = await _tracker.checkServicesStatus();
+      if (mounted) {
+        setState(() {
+          _currentHardwareStatus = status;
         });
       }
     });
@@ -34,13 +46,14 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializePlugin() async {
     try {
-      // 1. Request permissions (non-blocking for the UI)
-      await _requestPermissions();
+      // 1. Forcefully request permissions using the package API
+      await _tracker.requestPermissions();
 
       // 2. Configure and Start Tracking
       await _tracker.initialize(AttendanceConfig(
-        officeLatitude: 10.9994799,
-        officeLongitude: 76.9834678,
+        officePoints: [
+          'POINT(76.9834678 10.9994799)',
+        ],
         geofenceRadius: 100.0,
         wifiBSSIDs: [
           '3c:64:cf:a6:2b:d0',
@@ -54,12 +67,17 @@ class _HomeScreenState extends State<HomeScreen> {
           'd0:5f:64:52:05:e1',
           'd0:5f:64:52:05:e2',
         ],
-        shiftStartMs: 32400000, // 09:00 AM
-        shiftEndMs: 64800000, // 06:00 PM
+        shiftStartMs: 0, // 12:00 AM
+        shiftEndMs: 86399000, // 11:59 PM (Full day for testing)
         welcomeTitle: 'Aloha!',
         welcomeBody: 'Welcome to the office. Have a productive day!',
         outOfZoneTitle: 'Leaving?',
         outOfZoneBody: 'Safe travels! Don\'t forget to check out if you\'re done.',
+        welcomeVibration: [0, 500, 200, 500, 200, 500], // SOS Pattern for entry
+        outOfZoneVibration: [0, 200, 100, 200], // Rapid pulses for exit
+        welcomeSound: 'inzone',
+        outOfZoneSound: 'outofzone',
+        enableTts: true,
       ));
 
       await _tracker.startTracking();
@@ -71,20 +89,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Future<void> _requestPermissions() async {
-    await Permission.location.request();
-    await Permission.locationAlways.request();
-    await [
-      Permission.bluetooth,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-    ].request();
-    await Permission.notification.request();
-  }
-
   @override
   void dispose() {
     _resultSubscription?.cancel();
+    _statusTimer?.cancel();
     super.dispose();
   }
 
@@ -93,6 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       setState(() {
         _lastResult = result;
+        if (result != null) _currentHardwareStatus = result.status;
       });
     }
   }
@@ -107,8 +116,8 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               CircularProgressIndicator(),
               SizedBox(height: 20),
-              Text('Initializing Attendance Tracker...'),
-              Text('Please grant permissions if prompted.', style: TextStyle(fontSize: 12, color: Colors.grey)),
+              Text('Initializing Tracker...', style: TextStyle(fontWeight: FontWeight.bold)),
+              Text('Checking permissions & hardware', style: TextStyle(fontSize: 12, color: Colors.grey)),
             ],
           ),
         ),
@@ -116,6 +125,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final status = _lastResult?.isInZone ?? false;
+    final hardwareIssue = _currentHardwareStatus != null &&
+        (!_currentHardwareStatus!.isGpsEnabled ||
+            !_currentHardwareStatus!.isWifiEnabled ||
+            !_currentHardwareStatus!.isBleEnabled);
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
@@ -126,52 +139,84 @@ class _HomeScreenState extends State<HomeScreen> {
         backgroundColor: Colors.white,
         foregroundColor: Colors.black,
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Status Card
-            _buildStatusCard(status),
-            const SizedBox(height: 25),
-
-            // Diagnostic Panel
-            const Text(
-              'Diagnostic Information',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueGrey),
-            ),
-            const SizedBox(height: 15),
-            _buildDiagnosticPanel(),
-
-            const SizedBox(height: 25),
-            // Action Buttons
-            ElevatedButton.icon(
-              onPressed: _isManualScanning
-                  ? null
-                  : () async {
-                      setState(() => _isManualScanning = true);
-                      await _tracker.forceScan();
-                      Future.delayed(const Duration(seconds: 15), () {
-                        if (mounted && _isManualScanning) {
-                          setState(() => _isManualScanning = false);
-                        }
-                      });
-                    },
-              icon: _isManualScanning
-                  ? const SizedBox(
-                      width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.bolt),
-              label: Text(_isManualScanning ? 'Scanning Hardware...' : 'Force Scan Now'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.blueAccent,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.all(18),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-                elevation: 4,
+      body: Column(
+        children: [
+          if (hardwareIssue) _buildHardwareEnforcementBanner(),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _buildStatusCard(status),
+                  const SizedBox(height: 25),
+                  const Text(
+                    'Diagnostic Information',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueGrey),
+                  ),
+                  const SizedBox(height: 15),
+                  _buildDiagnosticPanel(),
+                  const SizedBox(height: 25),
+                  _buildActionButton(),
+                ],
               ),
             ),
-          ],
-        ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHardwareEnforcementBanner() {
+    List<String> missing = [];
+    if (!_currentHardwareStatus!.isGpsEnabled) missing.add('GPS');
+    if (!_currentHardwareStatus!.isWifiEnabled) missing.add('Wi-Fi');
+    if (!_currentHardwareStatus!.isBleEnabled) missing.add('Bluetooth');
+
+    return Container(
+      width: double.infinity,
+      color: Colors.redAccent,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: Colors.white),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'CRITICAL: ${missing.join(", ")} is OFF. Attendance will NOT be recorded.',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13),
+            ),
+          ),
+          TextButton(
+            onPressed: () => _tracker.requestPermissions(),
+            child: const Text('ENABLE', style: TextStyle(color: Colors.white, decoration: TextDecoration.underline)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionButton() {
+    return ElevatedButton.icon(
+      onPressed: _isManualScanning
+          ? null
+          : () async {
+              setState(() => _isManualScanning = true);
+              await _tracker.forceScan();
+              Future.delayed(const Duration(seconds: 15), () {
+                if (mounted && _isManualScanning) setState(() => _isManualScanning = false);
+              });
+            },
+      icon: _isManualScanning
+          ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+          : const Icon(Icons.bolt),
+      label: Text(_isManualScanning ? 'Scanning Hardware...' : 'Force Scan Now'),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.blueAccent,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.all(18),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        elevation: 4,
       ),
     );
   }
@@ -182,8 +227,8 @@ class _HomeScreenState extends State<HomeScreen> {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: isInZone
-              ? [const Color(0xFF00B09B), const Color(0xFF96C93D)] // Greenish
-              : [const Color(0xFFEB3349), const Color(0xFFF45C43)], // Reddish
+              ? [const Color(0xFF00B09B), const Color(0xFF96C93D)]
+              : [const Color(0xFFEB3349), const Color(0xFFF45C43)],
         ),
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
@@ -226,7 +271,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return const Card(
         child: Padding(
           padding: EdgeInsets.all(20),
-          child: Text('Waiting for background signal... Tap "Force Scan" to start.'),
+          child: Text('Waiting for background signal...'),
         ),
       );
     }
@@ -244,7 +289,6 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildSensorStatus('GPS Signal', res.status.isGpsEnabled, res.byGps),
             _buildSensorStatus('Wi-Fi Match', res.status.isWifiEnabled, res.byWifi),
             _buildSensorStatus('Bluetooth Match', res.status.isBleEnabled, res.byBle),
-            const SizedBox(height: 10),
             if (res.diagnosticLog.isNotEmpty) ...[
               const Divider(),
               const Align(
@@ -256,22 +300,12 @@ class _HomeScreenState extends State<HomeScreen> {
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.05),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  res.diagnosticLog,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 10, color: Colors.blueGrey),
-                ),
+                decoration:
+                    BoxDecoration(color: Colors.black.withOpacity(0.05), borderRadius: BorderRadius.circular(8)),
+                child: Text(res.diagnosticLog,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 10, color: Colors.blueGrey)),
               ),
             ],
-            const SizedBox(height: 10),
-            if (!res.status.isGpsEnabled || !res.status.isWifiEnabled || !res.status.isBleEnabled)
-              const Text(
-                '⚠ Some sensors are disabled. Please enable them for better accuracy.',
-                style: TextStyle(color: Colors.orange, fontSize: 12, fontWeight: FontWeight.bold),
-              ),
           ],
         ),
       ),

@@ -53,23 +53,39 @@ class DetectionFusion {
     // 1. GPS Check (Macro)
     try {
       isGpsEnabled = await Geolocator.isLocationServiceEnabled();
-      if (isGpsEnabled) {
+      if (isGpsEnabled && config.officePoints.isNotEmpty) {
         final position = await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 15)),
         );
 
-        currentDistance = Geolocator.distanceBetween(
-          position.latitude,
-          position.longitude,
-          config.officeLatitude,
-          config.officeLongitude,
-        );
-        if (currentDistance <= config.geofenceRadius) {
+        double? minDistance;
+        for (final pointStr in config.officePoints) {
+          final point = AttendanceConfig.parseWktPoint(pointStr);
+          if (point == null) continue;
+
+          final dist = Geolocator.distanceBetween(
+            position.latitude,
+            position.longitude,
+            point.key, // Latitude
+            point.value, // Longitude
+          );
+
+          if (minDistance == null || dist < minDistance) {
+            minDistance = dist;
+          }
+        }
+
+        currentDistance = minDistance;
+        if (currentDistance != null && currentDistance <= config.geofenceRadius) {
           byGps = true;
           diagnosticLog += "GPS: MATCH (${currentDistance.toStringAsFixed(1)}m)\n";
-        } else {
+        } else if (currentDistance != null) {
           diagnosticLog += "GPS: NO MATCH (${currentDistance.toStringAsFixed(1)}m)\n";
+        } else {
+          diagnosticLog += "GPS: No valid office points parsed\n";
         }
+      } else if (config.officePoints.isEmpty) {
+        diagnosticLog += "GPS: No office points configured\n";
       } else {
         diagnosticLog += "GPS: Service Disabled\n";
       }
@@ -84,8 +100,8 @@ class DetectionFusion {
         isWifiEnabled = canScan == CanStartScan.yes;
         if (isWifiEnabled) {
           await WiFiScan.instance.startScan();
-          diagnosticLog += "Wi-Fi: Scanning (3s delay)...\n";
-          await Future.delayed(const Duration(seconds: 3));
+          diagnosticLog += "Wi-Fi: Scanning (2s delay)...\n";
+          await Future.delayed(const Duration(seconds: 2));
 
           final results = await WiFiScan.instance.getScannedResults();
           diagnosticLog += "Wi-Fi: Found ${results.length} APs\n";
@@ -118,9 +134,9 @@ class DetectionFusion {
         isBleEnabled =
             await FlutterBluePlus.isSupported && await FlutterBluePlus.adapterState.first == BluetoothAdapterState.on;
         if (isBleEnabled) {
-          diagnosticLog += "BLE: Scanning (5s)...\n";
-          await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5), androidUsesFineLocation: true);
-          await Future.delayed(const Duration(seconds: 5));
+          diagnosticLog += "BLE: Scanning (3s)...\n";
+          await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3), androidUsesFineLocation: true);
+          await Future.delayed(const Duration(seconds: 3));
 
           final results = FlutterBluePlus.lastScanResults;
           diagnosticLog += "BLE: Found ${results.length} devices\n";

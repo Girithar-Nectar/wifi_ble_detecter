@@ -9,6 +9,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' hide ServiceStatus;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wifi_scan/wifi_scan.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import '../models/attendance_config.dart';
 import 'detection_fusion.dart';
 
@@ -16,6 +17,7 @@ import 'detection_fusion.dart';
 class BackgroundExecutor {
   static const String _configKey = 'attendance_config_cache';
   static final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
+  static final FlutterTts _tts = FlutterTts();
 
   static Future<void> initialize(AttendanceConfig config) async {
     final prefs = await SharedPreferences.getInstance();
@@ -27,8 +29,14 @@ class BackgroundExecutor {
     const AndroidInitializationSettings initializationSettingsAndroid = AndroidInitializationSettings(
       '@mipmap/ic_launcher',
     );
+    const DarwinInitializationSettings initializationSettingsIOS = DarwinInitializationSettings(
+      requestAlertPermission: true,
+      requestBadgePermission: true,
+      requestSoundPermission: true,
+    );
     const InitializationSettings initializationSettings = InitializationSettings(
       android: initializationSettingsAndroid,
+      iOS: initializationSettingsIOS,
     );
     await _notifications.initialize(initializationSettings);
 
@@ -158,7 +166,14 @@ class BackgroundExecutor {
 
   @pragma('vm:entry-point')
   static Future<bool> onIosBackground(ServiceInstance service) async {
-    return true;
+    try {
+      DartPluginRegistrant.ensureInitialized();
+      await _runDetectionCycle(service);
+      return true;
+    } catch (e) {
+      debugPrint('AttendanceTracker: iOS Background Fetch Error: $e');
+      return false;
+    }
   }
 
   static Future<void> _runDetectionCycle(ServiceInstance service) async {
@@ -193,13 +208,17 @@ class BackgroundExecutor {
     final detection = await DetectionFusion.performScan(config);
 
     // 3. Service Guard: Check if all required sensors are on
-    await _handleServiceGuard(detection, service);
+    await _handleServiceGuard(detection, service, config);
 
     // 4. Update Status and Notifications
     await _handleDetectionResult(detection, config, prefs, service);
   }
 
-  static Future<void> _handleServiceGuard(DetectionResult result, ServiceInstance service) async {
+  static Future<void> _handleServiceGuard(
+    DetectionResult result,
+    ServiceInstance service,
+    AttendanceConfig config,
+  ) async {
     final status = result.status;
     List<String> disabled = [];
 
@@ -219,6 +238,7 @@ class BackgroundExecutor {
       _showNotification(
         'Action Required',
         'Attendance tracking is limited because ${disabled.join(", ")} is turned OFF. Please enable it for accurate tracking.',
+        enableTts: config.enableTts,
       );
     }
   }
@@ -263,10 +283,30 @@ class BackgroundExecutor {
     service.invoke('onUpdate', jsonDecode(resultJson));
 
     if (isInZone && !wasInZone) {
-      _showNotification(config.welcomeTitle, config.welcomeBody);
+      String source = "";
+      if (result.byGps)
+        source = " (via GPS)";
+      else if (result.byWifi)
+        source = " (via Wi-Fi)";
+      else if (result.byBle)
+        source = " (via Bluetooth)";
+
+      _showNotification(
+        config.welcomeTitle,
+        "${config.welcomeBody}$source",
+        sound: config.welcomeSound,
+        vibrationPattern: config.welcomeVibration,
+        enableTts: config.enableTts,
+      );
       await prefs.setBool('was_in_zone', true);
     } else if (!isInZone && wasInZone) {
-      _showNotification(config.outOfZoneTitle, config.outOfZoneBody);
+      _showNotification(
+        config.outOfZoneTitle,
+        config.outOfZoneBody,
+        sound: config.outOfZoneSound,
+        vibrationPattern: config.outOfZoneVibration,
+        enableTts: config.enableTts,
+      );
       await prefs.setBool('was_in_zone', false);
     }
 
@@ -281,25 +321,53 @@ class BackgroundExecutor {
   static Future<void> _handleShiftEnded(AttendanceConfig config, SharedPreferences prefs) async {
     final wasInZone = prefs.getBool('was_in_zone') ?? false;
     if (wasInZone) {
-      _showNotification(config.shiftEndedTitle, config.shiftEndedBody);
+      _showNotification(
+        config.shiftEndedTitle,
+        config.shiftEndedBody,
+        sound: config.outOfZoneSound,
+        vibrationPattern: config.outOfZoneVibration,
+        enableTts: config.enableTts,
+      );
       await prefs.setBool('was_in_zone', false);
     }
   }
 
-  static void _showNotification(String title, String body) {
+  static void _showNotification(
+    String title,
+    String body, {
+    String? sound,
+    List<int>? vibrationPattern,
+    bool enableTts = false,
+  }) {
+    Int64List? pattern;
+    if (vibrationPattern != null) {
+      pattern = Int64List.fromList(vibrationPattern);
+    }
+
+    final soundFile = (sound != null && sound.isNotEmpty) ? RawResourceAndroidNotificationSound(sound) : null;
+
     _notifications.show(
       DateTime.now().millisecond,
       title,
       body,
-      const NotificationDetails(
+      NotificationDetails(
         android: AndroidNotificationDetails(
           'attendance_alerts',
           'Attendance Alerts',
           importance: Importance.high,
           priority: Priority.high,
           icon: '@mipmap/ic_launcher',
+          vibrationPattern: pattern,
+          sound: soundFile,
+          enableVibration: true,
         ),
+        iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true, sound: sound),
       ),
     );
+
+    // Speak using TTS if enabled
+    if (enableTts) {
+      _tts.speak("$title. $body");
+    }
   }
 }
