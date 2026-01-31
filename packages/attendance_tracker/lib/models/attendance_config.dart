@@ -25,6 +25,9 @@ class AttendanceConfig {
   /// The time when the shift ends (milliseconds from start of day).
   final int shiftEndMs;
 
+  /// How often to perform background scans (in seconds).
+  final int scanIntervalSeconds;
+
   /// Optional: A URL to hit for automatic check-in/check-out.
   final String? apiEndpoint;
 
@@ -63,6 +66,7 @@ class AttendanceConfig {
     this.bleMACs = const [],
     required this.shiftStartMs,
     required this.shiftEndMs,
+    this.scanIntervalSeconds = 60,
     this.apiEndpoint,
     this.apiHeaders,
     this.welcomeTitle = 'Welcome!',
@@ -88,6 +92,7 @@ class AttendanceConfig {
       'bleMACs': bleMACs,
       'shiftStartMs': shiftStartMs,
       'shiftEndMs': shiftEndMs,
+      'scanIntervalSeconds': scanIntervalSeconds,
       'apiEndpoint': apiEndpoint,
       'apiHeaders': apiHeaders,
       'welcomeTitle': welcomeTitle,
@@ -114,6 +119,7 @@ class AttendanceConfig {
       bleMACs: List<String>.from(json['bleMACs'] ?? []),
       shiftStartMs: json['shiftStartMs'],
       shiftEndMs: json['shiftEndMs'],
+      scanIntervalSeconds: json['scanIntervalSeconds'] ?? 60,
       apiEndpoint: json['apiEndpoint'],
       apiHeaders: json['apiHeaders'] != null ? Map<String, String>.from(json['apiHeaders']) : null,
       welcomeTitle: json['welcomeTitle'] ?? 'Welcome!',

@@ -160,9 +160,26 @@ class BackgroundExecutor {
       }
 
       // Periodic detection loop
-      Timer.periodic(const Duration(minutes: 1), (timer) async {
+      Timer.periodic(const Duration(seconds: 15), (timer) async {
         try {
-          await _runDetectionCycle(service);
+          final prefs = await SharedPreferences.getInstance();
+          final configJson = prefs.getString(_configKey);
+          if (configJson != null) {
+            final config = AttendanceConfig.fromJson(jsonDecode(configJson));
+            // We can't easily change the timer interval once started with Timer.periodic,
+            // but for this plugin, we'll re-check the config and skip if not time yet.
+            // A better way is to cancel and restart timer if config changes,
+            // but config usually changes only on app start.
+            // For now, we'll use a 15s "tick" and check if interval is met.
+            final lastScan = prefs.getInt('last_scan_timestamp') ?? 0;
+            final now = DateTime.now().millisecondsSinceEpoch;
+            if (now - lastScan >= (config.scanIntervalSeconds * 1000)) {
+              await _runDetectionCycle(service);
+              await prefs.setInt('last_scan_timestamp', now);
+            }
+          } else {
+            await _runDetectionCycle(service);
+          }
         } catch (e) {
           debugPrint('AttendanceTracker: Periodic cycle failed: $e');
         }
@@ -384,7 +401,12 @@ class BackgroundExecutor {
           sound: soundFile,
           enableVibration: true,
         ),
-        iOS: DarwinNotificationDetails(presentAlert: true, presentBadge: true, presentSound: true, sound: sound),
+        iOS: DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: true,
+          presentSound: true,
+          sound: (sound != null && sound.isNotEmpty) ? (sound.endsWith('.wav') ? sound : '$sound.wav') : null,
+        ),
       ),
     );
 
