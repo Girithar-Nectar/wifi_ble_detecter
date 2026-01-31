@@ -56,6 +56,29 @@ class BackgroundExecutor {
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(channel);
 
+    // Explicitly create MAX-importance channels for entry/exit (v3 to force reset)
+    const AndroidNotificationChannel entryChannel = AndroidNotificationChannel(
+      'attendance_entry_v3',
+      'Entry Alerts',
+      description: 'Triggered when entering the office zone',
+      importance: Importance.max, // MAX for heads-up
+      playSound: true,
+    );
+    const AndroidNotificationChannel exitChannel = AndroidNotificationChannel(
+      'attendance_exit_v3',
+      'Exit Alerts',
+      description: 'Triggered when leaving the office zone',
+      importance: Importance.max, // MAX for heads-up
+      playSound: true,
+    );
+
+    await _notifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(entryChannel);
+    await _notifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(exitChannel);
+
     await service.configure(
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
@@ -326,7 +349,7 @@ class BackgroundExecutor {
       _showNotification(
         config.welcomeTitle,
         "${config.welcomeBody}$source",
-        channelId: 'attendance_entry',
+        channelId: 'attendance_entry_v3',
         channelName: 'Entry Alerts',
         sound: config.welcomeSound,
         vibrationPattern: config.welcomeVibration,
@@ -337,7 +360,7 @@ class BackgroundExecutor {
       _showNotification(
         config.outOfZoneTitle,
         config.outOfZoneBody,
-        channelId: 'attendance_exit',
+        channelId: 'attendance_exit_v3',
         channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,
@@ -360,7 +383,7 @@ class BackgroundExecutor {
       _showNotification(
         config.shiftEndedTitle,
         config.shiftEndedBody,
-        channelId: 'attendance_exit',
+        channelId: 'attendance_exit_v3',
         channelName: 'Exit Alerts',
         sound: config.outOfZoneSound,
         vibrationPattern: config.outOfZoneVibration,
@@ -394,8 +417,9 @@ class BackgroundExecutor {
         android: AndroidNotificationDetails(
           channelId,
           channelName,
-          importance: Importance.high,
-          priority: Priority.high,
+          importance: Importance.max, // Ensure MAX matches channel
+          priority: Priority.max, // Ensure MAX priority
+          visibility: NotificationVisibility.public, // Show on lock screen
           icon: '@mipmap/ic_launcher',
           vibrationPattern: pattern,
           sound: soundFile,

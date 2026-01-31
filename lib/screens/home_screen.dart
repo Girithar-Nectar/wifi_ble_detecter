@@ -74,7 +74,7 @@ class _HomeScreenState extends State<HomeScreen> {
         outOfZoneVibration: [0, 200, 100, 200], // Rapid pulses for exit
         welcomeSound: 'inzone',
         outOfZoneSound: 'outofzone',
-        enableTts: true,
+        enableTts: false,
         scanIntervalSeconds: 2, // Scan every 30 seconds for better responsiveness
       ));
 
