@@ -132,12 +132,11 @@ class BackgroundExecutor {
     final isInZone = result.isInZone;
 
     if (isInZone && !wasInZone) {
-      _showNotification('Welcome!', 'You are in the office zone. Check-in detected.');
-      prefs.setBool('was_in_zone', true);
-      // Hit API here if endpoint provided
+      _showNotification(config.welcomeTitle, config.welcomeBody);
+      await prefs.setBool('was_in_zone', true);
     } else if (!isInZone && wasInZone) {
-      _showNotification('Out of Zone', 'You left the office. Don\'t forget to take a break or checkout.');
-      prefs.setBool('was_in_zone', false);
+      _showNotification(config.outOfZoneTitle, config.outOfZoneBody);
+      await prefs.setBool('was_in_zone', false);
     }
 
     if (service is AndroidServiceInstance) {
@@ -151,9 +150,8 @@ class BackgroundExecutor {
   static Future<void> _handleShiftEnded(AttendanceConfig config, SharedPreferences prefs) async {
     final wasInZone = prefs.getBool('was_in_zone') ?? false;
     if (wasInZone) {
-      _showNotification('Shift Ended', 'You are outside shift hours. Automatically checking you out.');
-      prefs.setBool('was_in_zone', false);
-      // Hit API here
+      _showNotification(config.shiftEndedTitle, config.shiftEndedBody);
+      await prefs.setBool('was_in_zone', false);
     }
   }
 

@@ -14,41 +14,11 @@ dependencies:
   attendance_tracker:
     path: packages/attendance_tracker
   
-  # State Management
-  get: ^4.6.6
-
-  # WiFi and Bluetooth Detection
-  wifi_scan: ^0.4.0
-  flutter_blue_plus: ^2.1.0
-
-  # Notifications
-  flutter_local_notifications: ^18.0.1
-  
-  # Location Services
-  geolocator: ^13.0.2
-  
-  #Shared Prefs
-  shared_preferences: ^2.5.3
-  
-
-
-
-  
   # Permissions
   permission_handler: ^11.3.0
   
-
-
-  #Logger
-  logger: ^2.6.0
-  
   # UI Components
   cupertino_icons: ^1.0.2
-
-  #Tts
-  flutter_tts: ^4.2.3
-
-
 
   connectivity_plus: ^6.1.4
 

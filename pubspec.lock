@@ -174,7 +174,7 @@ packages:
     source: hosted
     version: "5.1.2"
   flutter_blue_plus:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: flutter_blue_plus
       sha256: "399b3dbc15562ef59749f04e43a99ccbb91540022380d5f269aff3c2787534e4"
@@ -238,7 +238,7 @@ packages:
     source: hosted
     version: "3.0.2"
   flutter_local_notifications:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: flutter_local_notifications
       sha256: ef41ae901e7529e52934feba19ed82827b11baa67336829564aeab3129460610
@@ -266,21 +266,13 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  flutter_tts:
-    dependency: "direct main"
-    description:
-      name: flutter_tts
-      sha256: bdf2fc4483e74450dc9fc6fe6a9b6a5663e108d4d0dad3324a22c8e26bf48af4
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.2.3"
   flutter_web_plugins:
     dependency: transitive
     description: flutter
     source: sdk
     version: "0.0.0"
   geolocator:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: geolocator
       sha256: f62bcd90459e63210bbf9c35deb6a51c521f992a78de19a1fe5c11704f9530e2
@@ -327,14 +319,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.2.5"
-  get:
-    dependency: "direct main"
-    description:
-      name: get
-      sha256: c79eeb4339f1f3deffd9ec912f8a923834bec55f7b49c9e882b8fef2c139d425
-      url: "https://pub.dev"
-    source: hosted
-    version: "4.7.2"
   http:
     dependency: transitive
     description:
@@ -392,7 +376,7 @@ packages:
     source: hosted
     version: "3.0.0"
   logger:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: logger
       sha256: "2621da01aabaf223f8f961e751f2c943dbb374dc3559b982f200ccedadaa6999"
@@ -544,7 +528,7 @@ packages:
     source: hosted
     version: "0.28.0"
   shared_preferences:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: shared_preferences
       sha256: "6e8bf70b7fef813df4e9a36f658ac46d107db4b4cfe1048b477d4e453a8159f5"
@@ -709,7 +693,7 @@ packages:
     source: hosted
     version: "1.1.1"
   wifi_scan:
-    dependency: "direct main"
+    dependency: transitive
     description:
       name: wifi_scan
       sha256: "78896ea3db8838769053accd47cab02a62ead6480557e235295320603f84c9c7"

@@ -28,6 +28,14 @@ class AttendanceConfig {
   /// Optional: Headers for the API request.
   final Map<String, String>? apiHeaders;
 
+  // Custom Notifications
+  final String welcomeTitle;
+  final String welcomeBody;
+  final String outOfZoneTitle;
+  final String outOfZoneBody;
+  final String shiftEndedTitle;
+  final String shiftEndedBody;
+
   AttendanceConfig({
     required this.officeLatitude,
     required this.officeLongitude,
@@ -38,31 +46,53 @@ class AttendanceConfig {
     required this.shiftEnd,
     this.apiEndpoint,
     this.apiHeaders,
+    this.welcomeTitle = 'Welcome!',
+    this.welcomeBody = 'You are in the office zone. Check-in detected.',
+    this.outOfZoneTitle = 'Out of Zone',
+    this.outOfZoneBody = 'You left the office. Don\'t forget to take a break or checkout.',
+    this.shiftEndedTitle = 'Shift Ended',
+    this.shiftEndedBody = 'You are outside shift hours. Automatically checking you out.',
   });
 
-  Map<String, dynamic> toJson() => {
-    'officeLatitude': officeLatitude,
-    'officeLongitude': officeLongitude,
-    'geofenceRadius': geofenceRadius,
-    'wifiSSIDs': wifiSSIDs,
-    'bleDeviceNames': bleDeviceNames,
-    'shiftStartHour': shiftStart.hour,
-    'shiftStartMinute': shiftStart.minute,
-    'shiftEndHour': shiftEnd.hour,
-    'shiftEndMinute': shiftEnd.minute,
-    'apiEndpoint': apiEndpoint,
-    'apiHeaders': apiHeaders,
-  };
+  Map<String, dynamic> toJson() {
+    return {
+      'officeLatitude': officeLatitude,
+      'officeLongitude': officeLongitude,
+      'geofenceRadius': geofenceRadius,
+      'wifiSSIDs': wifiSSIDs,
+      'bleDeviceNames': bleDeviceNames,
+      'shiftStartHour': shiftStart.hour,
+      'shiftStartMinute': shiftStart.minute,
+      'shiftEndHour': shiftEnd.hour,
+      'shiftEndMinute': shiftEnd.minute,
+      'apiEndpoint': apiEndpoint,
+      'apiHeaders': apiHeaders,
+      'welcomeTitle': welcomeTitle,
+      'welcomeBody': welcomeBody,
+      'outOfZoneTitle': outOfZoneTitle,
+      'outOfZoneBody': outOfZoneBody,
+      'shiftEndedTitle': shiftEndedTitle,
+      'shiftEndedBody': shiftEndedBody,
+    };
+  }
 
-  factory AttendanceConfig.fromJson(Map<String, dynamic> json) => AttendanceConfig(
-    officeLatitude: json['officeLatitude'],
-    officeLongitude: json['officeLongitude'],
-    geofenceRadius: json['geofenceRadius'] ?? 100.0,
-    wifiSSIDs: List<String>.from(json['wifiSSIDs'] ?? []),
-    bleDeviceNames: List<String>.from(json['bleDeviceNames'] ?? []),
-    shiftStart: TimeOfDay(hour: json['shiftStartHour'], minute: json['shiftStartMinute']),
-    shiftEnd: TimeOfDay(hour: json['shiftEndHour'], minute: json['shiftEndMinute']),
-    apiEndpoint: json['apiEndpoint'],
-    apiHeaders: json['apiHeaders'] != null ? Map<String, String>.from(json['apiHeaders']) : null,
-  );
+  factory AttendanceConfig.fromJson(Map<String, dynamic> json) {
+    return AttendanceConfig(
+      officeLatitude: json['officeLatitude'],
+      officeLongitude: json['officeLongitude'],
+      geofenceRadius: json['geofenceRadius'],
+      wifiSSIDs: List<String>.from(json['wifiSSIDs']),
+      bleDeviceNames: List<String>.from(json['bleDeviceNames']),
+      shiftStart: TimeOfDay(hour: json['shiftStartHour'], minute: json['shiftStartMinute']),
+      shiftEnd: TimeOfDay(hour: json['shiftEndHour'], minute: json['shiftEndMinute']),
+      apiEndpoint: json['apiEndpoint'],
+      apiHeaders: json['apiHeaders'] != null ? Map<String, String>.from(json['apiHeaders']) : null,
+      welcomeTitle: json['welcomeTitle'] ?? 'Welcome!',
+      welcomeBody: json['welcomeBody'] ?? 'You are in the office zone. Check-in detected.',
+      outOfZoneTitle: json['outOfZoneTitle'] ?? 'Out of Zone',
+      outOfZoneBody: json['outOfZoneBody'] ?? 'You left the office. Don\'t forget to take a break or checkout.',
+      shiftEndedTitle: json['shiftEndedTitle'] ?? 'Shift Ended',
+      shiftEndedBody: json['shiftEndedBody'] ?? 'You are outside shift hours. Automatically checking you out.',
+    );
+  }
 }
