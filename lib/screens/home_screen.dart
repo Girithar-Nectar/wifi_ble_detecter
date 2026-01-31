@@ -73,6 +73,7 @@ class _HomeScreenState extends State<HomeScreen> {
         welcomeBody: 'Welcome to the office. Have a productive day!',
         outOfZoneTitle: 'Leaving?',
         outOfZoneBody: 'Safe travels! Don\'t forget to check out if you\'re done.',
+        
         welcomeVibration: [0, 500, 200, 500, 200, 500], // SOS Pattern for entry
         outOfZoneVibration: [0, 200, 100, 200], // Rapid pulses for exit
         welcomeSound: 'inzone',
