@@ -16,17 +16,35 @@ class AttendanceTracker {
   factory AttendanceTracker() => _instance;
   AttendanceTracker._internal();
 
-  /// Request all necessary permissions for attendance tracking.
-  Future<void> requestPermissions() async {
-    await Permission.location.request();
+  /// Check if all critical permissions (Location, Bluetooth) are granted.
+  Future<bool> hasPermissions() async {
+    final location = await Permission.location.isGranted;
+    final bluetooth = await Permission.bluetoothScan.isGranted;
+    final notification = await Permission.notification.isGranted;
+    return location && bluetooth && notification;
+  }
+
+  /// Request all necessary permissions and return true if critical ones are granted.
+  Future<bool> requestPermissions() async {
+    // Request location first as it's most critical
+    final locStatus = await Permission.location.request();
+    if (locStatus.isDenied) return false;
+
+    // Request notification
+    await Permission.notification.request();
+
+    // Request background location (often secondary/separate dialog)
     await Permission.locationAlways.request();
+
+    // Request Bluetooth group
     await [
       Permission.bluetooth,
       Permission.bluetoothScan,
       Permission.bluetoothConnect,
       Permission.bluetoothAdvertise,
     ].request();
-    await Permission.notification.request();
+
+    return hasPermissions();
   }
 
   /// Check if all required services (GPS, Wi-Fi, Bluetooth) are enabled hardware-wise.

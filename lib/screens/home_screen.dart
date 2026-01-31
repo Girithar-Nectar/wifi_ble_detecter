@@ -46,15 +46,12 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializePlugin() async {
     try {
-      // 1. Forcefully request permissions using the package API
-      await _tracker.requestPermissions();
-
-      // 2. Configure and Start Tracking
+      // 1. Basic initialization (fast)
       await _tracker.initialize(AttendanceConfig(
         officePoints: [
-          'POINT(76.9834678 10.9994799)',
+          'POINT(76.9859883 10.9993243)',
         ],
-        geofenceRadius: 100.0,
+        geofenceRadius: 200.0, // Increased for indoor drift
         wifiBSSIDs: [
           '3c:64:cf:a6:2b:d0',
           '3c:64:cf:a6:2b:ce',
@@ -73,7 +70,6 @@ class _HomeScreenState extends State<HomeScreen> {
         welcomeBody: 'Welcome to the office. Have a productive day!',
         outOfZoneTitle: 'Leaving?',
         outOfZoneBody: 'Safe travels! Don\'t forget to check out if you\'re done.',
-        
         welcomeVibration: [0, 500, 200, 500, 200, 500], // SOS Pattern for entry
         outOfZoneVibration: [0, 200, 100, 200], // Rapid pulses for exit
         welcomeSound: 'inzone',
@@ -81,9 +77,30 @@ class _HomeScreenState extends State<HomeScreen> {
         enableTts: true,
       ));
 
-      await _tracker.startTracking();
-      await _loadInitialStatus();
-    } finally {
+      // 2. Hide loading screen early (UI feels snappy)
+      if (mounted) {
+        setState(() => _isInitializing = false);
+      }
+
+      // 3. Handle Tracking & Permissions (First-run aware)
+      final hasPerms = await _tracker.hasPermissions();
+      if (hasPerms) {
+        // Normal path: start immediately
+        await _tracker.startTracking();
+        await _loadInitialStatus();
+      } else {
+        // First run or permissions missing: request and then start
+        debugPrint('AttendanceTracker: Permissions missing, requesting...');
+        final granted = await _tracker.requestPermissions();
+        if (granted) {
+          await _tracker.startTracking();
+          await _loadInitialStatus();
+        } else {
+          debugPrint('AttendanceTracker: Critical permissions denied by user.');
+        }
+      }
+    } catch (e) {
+      debugPrint('Init Error: $e');
       if (mounted) {
         setState(() => _isInitializing = false);
       }

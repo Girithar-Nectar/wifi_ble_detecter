@@ -17,7 +17,12 @@ import 'detection_fusion.dart';
 class BackgroundExecutor {
   static const String _configKey = 'attendance_config_cache';
   static final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
-  static final FlutterTts _tts = FlutterTts();
+  static FlutterTts? _tts;
+
+  static FlutterTts _getTts() {
+    _tts ??= FlutterTts();
+    return _tts!;
+  }
 
   static Future<void> initialize(AttendanceConfig config) async {
     final prefs = await SharedPreferences.getInstance();
@@ -54,7 +59,7 @@ class BackgroundExecutor {
     await service.configure(
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
-        autoStart: true, // Automatically start after boot
+        autoStart: false, // Don't start immediately; wait for permissions in UI
         isForegroundMode: true,
         notificationChannelId: 'attendance_tracker_foreground',
         initialNotificationTitle: 'Attendance Tracking',
@@ -111,8 +116,11 @@ class BackgroundExecutor {
   static void onStart(ServiceInstance service) async {
     if (service is AndroidServiceInstance) {
       // Android 14 Requirement: Must call this immediately (within 5 seconds)
-      // to satisfy startForegroundService() call from the system.
-      await service.setAsForegroundService();
+      try {
+        await service.setAsForegroundService();
+      } catch (e) {
+        debugPrint('AttendanceTracker: Failed to set foreground: $e');
+      }
     }
 
     try {
@@ -235,11 +243,16 @@ class BackgroundExecutor {
     }
 
     if (disabled.isNotEmpty) {
-      _showNotification(
-        'Action Required',
-        'Attendance tracking is limited because ${disabled.join(", ")} is turned OFF. Please enable it for accurate tracking.',
-        enableTts: config.enableTts,
-      );
+      final anythingEnabled = status.isGpsEnabled || status.isWifiEnabled || status.isBleEnabled;
+      if (!anythingEnabled) {
+        _showNotification(
+          'Detection Paused',
+          'All tracking sensors (GPS, Wi-Fi, Bluetooth) are turned OFF. Please enable at least one to record attendance.',
+          enableTts: config.enableTts,
+        );
+      } else {
+        debugPrint('AttendanceTracker: Tracking limited, disabled: $disabled');
+      }
     }
   }
 
@@ -367,7 +380,11 @@ class BackgroundExecutor {
 
     // Speak using TTS if enabled
     if (enableTts) {
-      _tts.speak("$title. $body");
+      try {
+        _getTts().speak("$title. $body");
+      } catch (e) {
+        debugPrint('AttendanceTracker: TTS Error in background: $e');
+      }
     }
   }
 }

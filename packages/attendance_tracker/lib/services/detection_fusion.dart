@@ -31,148 +31,179 @@ class DetectionResult {
   });
 }
 
+class _ScanTaskResult {
+  final bool matched;
+  final bool enabled;
+  final String log;
+  final double? distance;
+
+  _ScanTaskResult({required this.matched, required this.enabled, required this.log, this.distance});
+}
+
 class DetectionFusion {
   static String _normalize(String input) => input.replaceAll(':', '').toLowerCase().trim();
 
   static Future<DetectionResult> performScan(AttendanceConfig config) async {
-    bool byGps = false;
-    bool byWifi = false;
-    bool byBle = false;
-    double? currentDistance;
+    final startTime = DateTime.now();
+    String diagnosticLog = "Scan started at ${startTime.hour}:${startTime.minute}:${startTime.second}\n";
 
-    bool isGpsEnabled = false;
-    bool isWifiEnabled = false;
-    bool isBleEnabled = false;
-
-    String diagnosticLog = "Scan started at ${DateTime.now().hour}:${DateTime.now().minute}:${DateTime.now().second}\n";
-
-    // Pre-normalize config lists
-    final normalizedWifiBSSIDs = config.wifiBSSIDs.map(_normalize).toList();
-    final normalizedBleMACs = config.bleMACs.map(_normalize).toList();
-
-    // 1. GPS Check (Macro)
-    try {
-      isGpsEnabled = await Geolocator.isLocationServiceEnabled();
-      if (isGpsEnabled && config.officePoints.isNotEmpty) {
-        final position = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 15)),
-        );
-
-        double? minDistance;
-        for (final pointStr in config.officePoints) {
-          final point = AttendanceConfig.parseWktPoint(pointStr);
-          if (point == null) continue;
-
-          final dist = Geolocator.distanceBetween(
-            position.latitude,
-            position.longitude,
-            point.key, // Latitude
-            point.value, // Longitude
+    // 1. GPS Task
+    final gpsTask = Future<_ScanTaskResult>(() async {
+      bool matched = false;
+      bool enabled = false;
+      double? distance;
+      String log = "";
+      try {
+        enabled = await Geolocator.isLocationServiceEnabled();
+        if (enabled && config.officePoints.isNotEmpty) {
+          final position = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 5)),
           );
 
-          if (minDistance == null || dist < minDistance) {
-            minDistance = dist;
+          log += "GPS: Acquired (${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)})\n";
+
+          double? minDistance;
+          for (final pointStr in config.officePoints) {
+            final point = AttendanceConfig.parseWktPoint(pointStr);
+            if (point == null) continue;
+            final d = Geolocator.distanceBetween(position.latitude, position.longitude, point.key, point.value);
+            if (minDistance == null || d < minDistance) minDistance = d;
           }
-        }
 
-        currentDistance = minDistance;
-        if (currentDistance != null && currentDistance <= config.geofenceRadius) {
-          byGps = true;
-          diagnosticLog += "GPS: MATCH (${currentDistance.toStringAsFixed(1)}m)\n";
-        } else if (currentDistance != null) {
-          diagnosticLog += "GPS: NO MATCH (${currentDistance.toStringAsFixed(1)}m)\n";
+          distance = minDistance;
+          if (distance != null && distance <= config.geofenceRadius) {
+            matched = true;
+            log += "GPS: MATCH (${distance.toStringAsFixed(1)}m)\n";
+          } else if (distance != null) {
+            log += "GPS: NO MATCH (${distance.toStringAsFixed(1)}m from office)\n";
+          }
         } else {
-          diagnosticLog += "GPS: No valid office points parsed\n";
+          log += "GPS Skip: ${config.officePoints.isEmpty ? "No Config" : "Service OFF"}\n";
         }
-      } else if (config.officePoints.isEmpty) {
-        diagnosticLog += "GPS: No office points configured\n";
-      } else {
-        diagnosticLog += "GPS: Service Disabled\n";
+      } catch (e) {
+        log += "GPS Error: $e\n";
       }
-    } catch (e) {
-      diagnosticLog += "GPS Error: $e\n";
-    }
+      return _ScanTaskResult(matched: matched, enabled: enabled, log: log, distance: distance);
+    });
 
-    // 2. Wi-Fi Check (Micro)
-    try {
-      if (config.wifiSSIDs.isNotEmpty || config.wifiBSSIDs.isNotEmpty) {
+    // 2. Wi-Fi Task
+    final wifiTask = Future<_ScanTaskResult>(() async {
+      bool matched = false;
+      bool enabled = false;
+      String log = "";
+      try {
+        if (config.wifiSSIDs.isEmpty && config.wifiBSSIDs.isEmpty) {
+          return _ScanTaskResult(matched: false, enabled: false, log: "");
+        }
+
         final canScan = await WiFiScan.instance.canStartScan();
-        isWifiEnabled = canScan == CanStartScan.yes;
-        if (isWifiEnabled) {
+        enabled = canScan == CanStartScan.yes;
+
+        if (enabled) {
           await WiFiScan.instance.startScan();
-          diagnosticLog += "Wi-Fi: Scanning (2s delay)...\n";
           await Future.delayed(const Duration(seconds: 2));
-
           final results = await WiFiScan.instance.getScannedResults();
-          diagnosticLog += "Wi-Fi: Found ${results.length} APs\n";
+          final normConfigBssids = config.wifiBSSIDs.map(_normalize).toList();
 
-          for (var result in results) {
-            final normBssid = _normalize(result.bssid);
-            final ssidMatch = result.ssid.isNotEmpty && config.wifiSSIDs.contains(result.ssid);
-            final bssidMatch = result.bssid.isNotEmpty && normalizedWifiBSSIDs.contains(normBssid);
-
-            if (ssidMatch || bssidMatch) {
-              byWifi = true;
-              diagnosticLog += "Wi-Fi: MATCH! ${result.ssid} ($normBssid)\n";
+          for (var ap in results) {
+            final normBssid = _normalize(ap.bssid);
+            if (config.wifiSSIDs.contains(ap.ssid) || normConfigBssids.contains(normBssid)) {
+              matched = true;
+              log += "Wi-Fi: MATCH! ${ap.ssid}\n";
               break;
             }
           }
-          if (!byWifi && results.isNotEmpty) {
-            diagnosticLog += "Wi-Fi: No match. Top AP: ${results.first.ssid}\n";
-          }
+          if (!matched) log += "Wi-Fi: NO MATCH (${results.length} APs found)\n";
         } else {
-          diagnosticLog += "Wi-Fi Fail: $canScan\n";
+          log += "Wi-Fi Skip: OFF ($canScan)\n";
         }
+      } catch (e) {
+        log += "Wi-Fi Error: $e\n";
       }
-    } catch (e) {
-      diagnosticLog += "Wi-Fi Error: $e\n";
-    }
+      return _ScanTaskResult(matched: matched, enabled: enabled, log: log);
+    });
 
-    // 3. BLE Check (Micro)
-    try {
-      if (config.bleDeviceNames.isNotEmpty || config.bleMACs.isNotEmpty) {
-        isBleEnabled =
-            await FlutterBluePlus.isSupported && await FlutterBluePlus.adapterState.first == BluetoothAdapterState.on;
-        if (isBleEnabled) {
-          diagnosticLog += "BLE: Scanning (3s)...\n";
-          await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3), androidUsesFineLocation: true);
-          await Future.delayed(const Duration(seconds: 3));
+    // 3. BLE Task
+    final bleTask = Future<_ScanTaskResult>(() async {
+      bool matched = false;
+      bool enabled = false;
+      String log = "";
+      try {
+        if (config.bleDeviceNames.isEmpty && config.bleMACs.isEmpty) {
+          return _ScanTaskResult(matched: false, enabled: false, log: "");
+        }
+
+        enabled =
+            await FlutterBluePlus.isSupported &&
+            (await FlutterBluePlus.adapterState.first.timeout(
+                  const Duration(seconds: 1),
+                  onTimeout: () => BluetoothAdapterState.unknown,
+                )) ==
+                BluetoothAdapterState.on;
+
+        if (enabled) {
+          // Check Location Services (Android Requirement)
+          final locOn = await Geolocator.isLocationServiceEnabled();
+          if (!locOn) {
+            return _ScanTaskResult(
+              matched: false,
+              enabled: true,
+              log: "BLE Skip: Android requires system Location ON for BT scanning to work.\n",
+            );
+          }
+
+          // startScan with timeout completes when scan FINISHES. No extra delay needed.
+          await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
 
           final results = FlutterBluePlus.lastScanResults;
-          diagnosticLog += "BLE: Found ${results.length} devices\n";
+          final normConfigMacs = config.bleMACs.map(_normalize).toList();
 
           for (var r in results) {
             final normMac = _normalize(r.device.remoteId.str);
-            final nameMatch = config.bleDeviceNames.contains(r.device.platformName);
-            final macMatch = normalizedBleMACs.contains(normMac);
+            // Safe name check
+            final deviceName = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
 
-            if (nameMatch || macMatch) {
-              byBle = true;
-              diagnosticLog += "BLE: MATCH! ${r.device.platformName} ($normMac)\n";
+            if (config.bleDeviceNames.contains(deviceName) || normConfigMacs.contains(normMac)) {
+              matched = true;
+              log += "BLE: MATCH! $deviceName ($normMac)\n";
               break;
             }
           }
-          if (!byBle && results.isNotEmpty) {
-            diagnosticLog += "BLE: No match. Top device: ${results.first.device.platformName}\n";
-          }
+          if (!matched) log += "BLE: NO MATCH (${results.length} devices found)\n";
         } else {
-          diagnosticLog += "BLE: Disabled/Unsupported\n";
+          log += "BLE Skip: BT is OFF\n";
         }
+      } catch (e) {
+        log += "BLE Error: $e\n";
       }
-    } catch (e) {
-      diagnosticLog += "BLE Error: $e\n";
-    }
+      return _ScanTaskResult(matched: matched, enabled: enabled, log: log);
+    });
 
-    // Fusion Logic
-    bool inZone = byGps || byWifi || byBle;
+    // Run parallel
+    final results = await Future.wait([gpsTask, wifiTask, bleTask]);
+    final gpsR = results[0];
+    final wifiR = results[1];
+    final bleR = results[2];
+
+    diagnosticLog += "${gpsR.log}${wifiR.log}${bleR.log}";
+
+    bool inZone = gpsR.matched || wifiR.matched || bleR.matched;
+    final duration = DateTime.now().difference(startTime).inSeconds;
+
+    if (inZone) {
+      diagnosticLog +=
+          "FUSION SUCCESS (via ${[if (gpsR.matched) "GPS", if (wifiR.matched) "Wi-Fi", if (bleR.matched) "BLE"].join(" + ")}) in ${duration}s\n";
+    } else {
+      diagnosticLog += "FUSION FAIL: Nothing matched in ${duration}s\n";
+    }
 
     return DetectionResult(
       isInZone: inZone,
-      byGps: byGps,
-      byWifi: byWifi,
-      byBle: byBle,
-      distance: currentDistance,
-      status: ServiceStatus(isGpsEnabled: isGpsEnabled, isWifiEnabled: isWifiEnabled, isBleEnabled: isBleEnabled),
+      byGps: gpsR.matched,
+      byWifi: wifiR.matched,
+      byBle: bleR.matched,
+      distance: gpsR.distance,
+      status: ServiceStatus(isGpsEnabled: gpsR.enabled, isWifiEnabled: wifiR.enabled, isBleEnabled: bleR.enabled),
       diagnosticLog: diagnosticLog,
     );
   }
