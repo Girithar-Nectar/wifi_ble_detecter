@@ -366,9 +366,9 @@ class BackgroundExecutor {
 
     if (isInZone && !wasInZone) {
       String source = "";
-      if (result.byGps)
+      if (result.byGps) {
         source = " (via GPS)";
-      else if (result.byWifi)
+      } else if (result.byWifi)
         source = " (via Wi-Fi)";
       else if (result.byBle)
         source = " (via Bluetooth)";
