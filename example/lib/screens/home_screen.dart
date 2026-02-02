@@ -57,6 +57,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await _tracker.initialize(AttendanceConfig(
         officePoints: [
           'POINT(76.9859883 10.9993243)',
+          'POINT(76.9326375 10.990581)', ///giri location
         ],
         geofenceRadius: 200.0, 
         wifiBSSIDs: [
@@ -66,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
           '3c:64:cf:a6:31:70',
           '3c:64:cf:a5:fc:48',
           '3c:64:cf:a5:fc:46',
+          'f6:a6:4d:e7:d2:57'  //giri wifi
         ],
         bleMACs: [
           'd0:5f:64:52:05:e1',
