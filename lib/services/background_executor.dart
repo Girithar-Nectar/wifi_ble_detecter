@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:vibration/vibration.dart';
+import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
 import '../models/attendance_config.dart';
 import 'detection_fusion.dart';
 
@@ -334,32 +335,51 @@ class BackgroundExecutor {
     AttendanceConfig config,
   ) async {
     final status = result.status;
-    List<String> disabled = [];
 
-    if (!status.isGpsEnabled) disabled.add('GPS/Location');
-    if (!status.isWifiEnabled) disabled.add('Wi-Fi');
-    if (!status.isBleEnabled) {
-      disabled.add('Bluetooth');
-      // Attempt to auto-enable Bluetooth on Android
+    // Check what is REQUIRED vs what is ENABLED
+    bool gpsRequired = config.officePoints.isNotEmpty;
+    bool wifiRequired = config.wifiSSIDs.isNotEmpty || config.wifiBSSIDs.isNotEmpty;
+    bool bleRequired = config.bleDeviceNames.isNotEmpty || config.bleMACs.isNotEmpty;
+
+    List<String> missingRequired = [];
+    if (gpsRequired && !status.isGpsEnabled) missingRequired.add('GPS');
+    if (wifiRequired && !status.isWifiEnabled) missingRequired.add('Wi-Fi');
+    if (bleRequired && !status.isBleEnabled) {
+      missingRequired.add('Bluetooth');
+      // Attempt to auto-enable Bluetooth on Android if it's required
       try {
-        if (await FlutterBluePlus.isSupported) {
+        if (await FlutterBluePlus.isSupported && await Permission.bluetoothConnect.isGranted) {
           await FlutterBluePlus.turnOn();
         }
       } catch (_) {}
     }
 
-    if (disabled.isNotEmpty) {
-      final anythingEnabled = status.isGpsEnabled || status.isWifiEnabled || status.isBleEnabled;
-      if (!anythingEnabled) {
+    if (missingRequired.isNotEmpty) {
+      final allRequiredMissing =
+          (gpsRequired ? !status.isGpsEnabled : true) &&
+          (wifiRequired ? !status.isWifiEnabled : true) &&
+          (bleRequired ? !status.isBleEnabled : true);
+
+      if (allRequiredMissing) {
         _showNotification(
           'Detection Paused',
-          'All tracking sensors (GPS, Wi-Fi, Bluetooth) are turned OFF. Please enable at least one to record attendance.',
+          'All required sensors (${missingRequired.join(", ")}) are OFF. Tracking is impossible.',
           channelId: 'attendance_system',
           channelName: 'System Alerts',
           enableTts: config.enableTts,
         );
       } else {
-        debugPrint('AttendanceTracker: Tracking limited, disabled: $disabled');
+        // Limited detection: at least one required sensor is working, but others are off
+        // We only notify if a critical one is off
+        debugPrint('AttendanceTracker: Tracking limited, missing required: $missingRequired');
+
+        // Optionally show a lower priority notification or update foreground info
+        if (service is AndroidServiceInstance) {
+          service.setForegroundNotificationInfo(
+            title: 'Attendance Tracking (Limited)',
+            content: 'Please enable ${missingRequired.join(" and ")} for better accuracy.',
+          );
+        }
       }
     }
   }

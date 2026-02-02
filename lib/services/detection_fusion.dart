@@ -101,11 +101,14 @@ class DetectionFusion {
         final wifiSsid = await info.getWifiName();
         final wifiBssid = await info.getWifiBSSID();
 
+        // On Android, we need location permission to get any Wi-Fi info.
+        // If we can get a BSSID, the hardware is clearly ON.
+        enabled = wifiBssid != null;
+
         final locPerm = await Geolocator.checkPermission();
         log += "Wi-Fi Status: LocPerm=$locPerm, SSID=${wifiSsid != null}, BSSID=${wifiBssid != null}\n";
 
         if (wifiBssid != null) {
-          enabled = true;
           final normBssid = _normalize(wifiBssid);
           final normConfigBssids = config.wifiBSSIDs.map(_normalize).toList();
 
@@ -145,14 +148,17 @@ class DetectionFusion {
         final bleScanPerm = await Permission.bluetoothScan.status;
         final bleConnectPerm = await Permission.bluetoothConnect.status;
 
-        log +=
-            "BLE Status: Adapter=$adapterState, LocPerm=$locPerm, ScanPerm=$bleScanPerm, ConnectPerm=$bleConnectPerm\n";
-
+        // enabled means hardware is active
         enabled = await FlutterBluePlus.isSupported && adapterState == BluetoothAdapterState.on;
+
+        log +=
+            "BLE Status: Adapter=$adapterState, Supported=${await FlutterBluePlus.isSupported}, LocPerm=$locPerm, ScanPerm=$bleScanPerm, ConnectPerm=$bleConnectPerm\n";
 
         if (enabled) {
           // Optimized Scan v3: 10s window + Stream Collection
           log += "BLE: Preparing scan...\n";
+          // ... rest of the logic remains the same ...
+          // Wait, I should keep the rest of the logic in the replacement chunk
 
           try {
             await FlutterBluePlus.stopScan();
@@ -189,7 +195,6 @@ class DetectionFusion {
           }, onError: (e) => log += "BLE: Stream Error: $e\n");
 
           // Wait for scan to complete or timeout
-          // We wait slightly longer than the scan timeout to ensure we capture all results
           int elapsed = 0;
           while (FlutterBluePlus.isScanningNow && elapsed < 16) {
             await Future.delayed(const Duration(seconds: 1));
