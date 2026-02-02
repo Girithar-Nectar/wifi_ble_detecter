@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart' hide ServiceStatus;
-import 'package:wifi_scan/wifi_scan.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
 import 'services/background_executor.dart';
@@ -19,11 +19,20 @@ class AttendanceTracker {
   /// Check if all critical permissions (Location, Bluetooth) are granted.
   Future<bool> hasPermissions() async {
     try {
-      final location = await Permission.location.isGranted;
-      final locationAlways = await Permission.locationAlways.isGranted;
-      final bluetooth = await Permission.bluetoothScan.isGranted;
-      final notification = await Permission.notification.isGranted;
-      return location && locationAlways && bluetooth && notification;
+      // Check location permission via Geolocator
+      final locStatus = await Geolocator.checkPermission();
+      final hasLoc = locStatus == LocationPermission.always || locStatus == LocationPermission.whileInUse;
+
+      // Check notification permission via permission_handler
+      final hasNotification = await Permission.notification.isGranted;
+
+      // For Bluetooth, the user wants us to rely on FlutterBluePlus
+      // On modern Android, the 'permission' is BLUETOOTH_SCAN/CONNECT
+      // FBP usually handles this internally if the manifest is correct,
+      // but we'll check Scan permission to be safe.
+      final hasBleScan = await Permission.bluetoothScan.isGranted;
+
+      return hasLoc && hasNotification && hasBleScan;
     } catch (e) {
       print('AttendanceTracker: Error checking permissions: $e');
       return false;
@@ -38,31 +47,28 @@ class AttendanceTracker {
       // Small delay to let the app settle
       await Future.delayed(const Duration(milliseconds: 500));
 
-      // Request foreground location first (Android 14 requirement)
-      print('AttendanceTracker: Requesting foreground location (PERMISSION_HANDLER)...');
-      final locStatus = await Permission.location.request();
-      print('AttendanceTracker: Foreground location status received: $locStatus');
+      // Request location permission using geolocator
+      print('AttendanceTracker: Requesting geolocation permission (GEOLOCATOR)...');
+      final locStatus = await Geolocator.requestPermission();
+      print('AttendanceTracker: Geolocation status received: $locStatus');
 
-      if (locStatus.isDenied || locStatus.isPermanentlyDenied) {
-        print('AttendanceTracker: Foreground location denied - aborting rest');
+      if (locStatus == LocationPermission.denied || locStatus == LocationPermission.deniedForever) {
+        print('AttendanceTracker: Geolocation denied - aborting rest');
         return false;
       }
 
-      // Only request background location AFTER foreground is granted (Android 14)
-      if (locStatus.isGranted) {
-        print('AttendanceTracker: Requesting background location...');
-        final bgStatus = await Permission.locationAlways.request();
-        print('AttendanceTracker: Background location status: $bgStatus');
-      }
+      // Request Bluetooth runtime permissions first (Android 12+ requirement)
+      // This is still needed for FBP to have access to the hardware
+      print('AttendanceTracker: Requesting Bluetooth runtime permissions...');
+      await [Permission.bluetoothScan, Permission.bluetoothConnect].request();
 
-      // Request Bluetooth group
-      print('AttendanceTracker: Requesting Bluetooth permissions...');
-      await [
-        Permission.bluetooth,
-        Permission.bluetoothScan,
-        Permission.bluetoothConnect,
-        Permission.bluetoothAdvertise,
-      ].request();
+      // Attempt to turn on Bluetooth hardware
+      print('AttendanceTracker: Powering on Bluetooth (FBP)...');
+      try {
+        await FlutterBluePlus.turnOn();
+      } catch (e) {
+        print('AttendanceTracker: Bluetooth turnOn() failed: $e');
+      }
 
       // Request notification LAST (may hang on some devices if first)
       print('AttendanceTracker: Requesting notification permission...');
@@ -84,12 +90,22 @@ class AttendanceTracker {
     if (result != null) return result.status;
 
     // Fallback if no last result
-    return ServiceStatus(
-      isGpsEnabled: await Geolocator.isLocationServiceEnabled(),
-      isWifiEnabled: (await WiFiScan.instance.canStartScan()) == CanStartScan.yes,
-      isBleEnabled:
-          await FlutterBluePlus.isSupported && await FlutterBluePlus.adapterState.first == BluetoothAdapterState.on,
-    );
+    final isGpsEnabled = await Geolocator.isLocationServiceEnabled();
+    final wifiBssid = await NetworkInfo().getWifiBSSID();
+
+    // Check BLE with timeout
+    bool isBleEnabled = false;
+    try {
+      if (await FlutterBluePlus.isSupported) {
+        final state = await FlutterBluePlus.adapterState.first.timeout(
+          const Duration(milliseconds: 500),
+          onTimeout: () => BluetoothAdapterState.unknown,
+        );
+        isBleEnabled = state == BluetoothAdapterState.on;
+      }
+    } catch (_) {}
+
+    return ServiceStatus(isGpsEnabled: isGpsEnabled, isWifiEnabled: wifiBssid != null, isBleEnabled: isBleEnabled);
   }
 
   /// Initialize the plugin with the provided configuration.
@@ -136,16 +152,16 @@ class AttendanceTracker {
 
   DetectionResult _mapToResult(Map<String, dynamic> map) {
     return DetectionResult(
-      isInZone: map['isInZone'],
-      byGps: map['byGps'],
-      byWifi: map['byWifi'],
-      byBle: map['byBle'],
-      distance: map['distance'],
+      isInZone: map['isInZone'] ?? false,
+      byGps: map['byGps'] ?? false,
+      byWifi: map['byWifi'] ?? false,
+      byBle: map['byBle'] ?? false,
+      distance: (map['distance'] as num?)?.toDouble(),
       diagnosticLog: map['diagnosticLog'] ?? "",
       status: ServiceStatus(
-        isGpsEnabled: map['status']['isGpsEnabled'],
-        isWifiEnabled: map['status']['isWifiEnabled'],
-        isBleEnabled: map['status']['isBleEnabled'],
+        isGpsEnabled: map['status']?['isGpsEnabled'] ?? false,
+        isWifiEnabled: map['status']?['isWifiEnabled'] ?? false,
+        isBleEnabled: map['status']?['isBleEnabled'] ?? false,
       ),
     );
   }

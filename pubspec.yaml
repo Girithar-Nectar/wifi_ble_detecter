@@ -13,7 +13,7 @@ dependencies:
   plugin_platform_interface: ^2.1.8
   flutter_background_service: ^5.1.0
   geolocator: ^14.0.2
-  wifi_scan: ^0.4.1+2
+  network_info_plus: ^7.0.0
   flutter_blue_plus: ^2.1.0
   flutter_local_notifications: ^20.0.0
   shared_preferences: ^2.5.4

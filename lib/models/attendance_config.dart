@@ -19,6 +19,9 @@ class AttendanceConfig {
   /// List of BLE MAC Addresses (or Platform IDs) that confirm presence.
   final List<String> bleMACs;
 
+  /// List of BLE Service UUIDs to filter for (CRITICAL for iOS background scanning).
+  final List<String> bleServiceUuids;
+
   /// The time when the shift starts (milliseconds from start of day).
   final int shiftStartMs;
 
@@ -64,6 +67,7 @@ class AttendanceConfig {
     this.wifiBSSIDs = const [],
     this.bleDeviceNames = const [],
     this.bleMACs = const [],
+    this.bleServiceUuids = const [],
     required this.shiftStartMs,
     required this.shiftEndMs,
     this.scanIntervalSeconds = 60,
@@ -90,6 +94,7 @@ class AttendanceConfig {
       'wifiBSSIDs': wifiBSSIDs,
       'bleDeviceNames': bleDeviceNames,
       'bleMACs': bleMACs,
+      'bleServiceUuids': bleServiceUuids,
       'shiftStartMs': shiftStartMs,
       'shiftEndMs': shiftEndMs,
       'scanIntervalSeconds': scanIntervalSeconds,
@@ -112,14 +117,15 @@ class AttendanceConfig {
   factory AttendanceConfig.fromJson(Map<String, dynamic> json) {
     return AttendanceConfig(
       officePoints: List<String>.from(json['officePoints'] ?? []),
-      geofenceRadius: json['geofenceRadius'],
+      geofenceRadius: (json['geofenceRadius'] as num?)?.toDouble() ?? 100.0,
       wifiSSIDs: List<String>.from(json['wifiSSIDs'] ?? []),
       wifiBSSIDs: List<String>.from(json['wifiBSSIDs'] ?? []),
       bleDeviceNames: List<String>.from(json['bleDeviceNames'] ?? []),
       bleMACs: List<String>.from(json['bleMACs'] ?? []),
-      shiftStartMs: json['shiftStartMs'],
-      shiftEndMs: json['shiftEndMs'],
-      scanIntervalSeconds: json['scanIntervalSeconds'] ?? 60,
+      bleServiceUuids: List<String>.from(json['bleServiceUuids'] ?? []),
+      shiftStartMs: (json['shiftStartMs'] as num?)?.toInt() ?? 0,
+      shiftEndMs: (json['shiftEndMs'] as num?)?.toInt() ?? 86399000,
+      scanIntervalSeconds: (json['scanIntervalSeconds'] as num?)?.toInt() ?? 60,
       apiEndpoint: json['apiEndpoint'],
       apiHeaders: json['apiHeaders'] != null ? Map<String, String>.from(json['apiHeaders']) : null,
       welcomeTitle: json['welcomeTitle'] ?? 'Welcome!',

@@ -1,6 +1,7 @@
 import 'package:geolocator/geolocator.dart';
-import 'package:wifi_scan/wifi_scan.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../models/attendance_config.dart';
 
 class ServiceStatus {
@@ -96,26 +97,29 @@ class DetectionFusion {
           return _ScanTaskResult(matched: false, enabled: false, log: "");
         }
 
-        final canScan = await WiFiScan.instance.canStartScan();
-        enabled = canScan == CanStartScan.yes;
+        final info = NetworkInfo();
+        final wifiSsid = await info.getWifiName();
+        final wifiBssid = await info.getWifiBSSID();
 
-        if (enabled) {
-          await WiFiScan.instance.startScan();
-          await Future.delayed(const Duration(seconds: 2));
-          final results = await WiFiScan.instance.getScannedResults();
+        final locPerm = await Geolocator.checkPermission();
+        log += "Wi-Fi Status: LocPerm=$locPerm, SSID=${wifiSsid != null}, BSSID=${wifiBssid != null}\n";
+
+        if (wifiBssid != null) {
+          enabled = true;
+          final normBssid = _normalize(wifiBssid);
           final normConfigBssids = config.wifiBSSIDs.map(_normalize).toList();
 
-          for (var ap in results) {
-            final normBssid = _normalize(ap.bssid);
-            if (config.wifiSSIDs.contains(ap.ssid) || normConfigBssids.contains(normBssid)) {
-              matched = true;
-              log += "Wi-Fi: MATCH! ${ap.ssid}\n";
-              break;
-            }
+          // Clean SSID (remove quotes if present)
+          String cleanSsid = (wifiSsid ?? "").replaceAll('"', '');
+
+          if ((cleanSsid.isNotEmpty && config.wifiSSIDs.contains(cleanSsid)) || normConfigBssids.contains(normBssid)) {
+            matched = true;
+            log += "Wi-Fi: MATCH! Connected to $cleanSsid ($wifiBssid)\n";
+          } else {
+            log += "Wi-Fi: Connected to '$cleanSsid' ($wifiBssid - Not in config)\n";
           }
-          if (!matched) log += "Wi-Fi: NO MATCH (${results.length} APs found)\n";
         } else {
-          log += "Wi-Fi Skip: OFF ($canScan)\n";
+          log += "Wi-Fi Skip: Not connected or Location permission missing (required for SSID/BSSID)\n";
         }
       } catch (e) {
         log += "Wi-Fi Error: $e\n";
@@ -133,79 +137,105 @@ class DetectionFusion {
           return _ScanTaskResult(matched: false, enabled: false, log: "");
         }
 
-        enabled =
-            await FlutterBluePlus.isSupported &&
-            (await FlutterBluePlus.adapterState.first.timeout(
-                  const Duration(seconds: 1),
-                  onTimeout: () => BluetoothAdapterState.unknown,
-                )) ==
-                BluetoothAdapterState.on;
+        final adapterState = await FlutterBluePlus.adapterState.first.timeout(
+          const Duration(seconds: 1),
+          onTimeout: () => BluetoothAdapterState.unknown,
+        );
+        final locPerm = await Geolocator.checkPermission();
+        final bleScanPerm = await Permission.bluetoothScan.status;
+        final bleConnectPerm = await Permission.bluetoothConnect.status;
+
+        log +=
+            "BLE Status: Adapter=$adapterState, LocPerm=$locPerm, ScanPerm=$bleScanPerm, ConnectPerm=$bleConnectPerm\n";
+
+        enabled = await FlutterBluePlus.isSupported && adapterState == BluetoothAdapterState.on;
 
         if (enabled) {
-          // Check Location Services (Android Requirement)
-          final locOn = await Geolocator.isLocationServiceEnabled();
-          if (!locOn) {
-            return _ScanTaskResult(
-              matched: false,
-              enabled: true,
-              log: "BLE Skip: Android requires system Location ON for BT scanning to work.\n",
-            );
-          }
+          // Optimized Scan v3: 10s window + Stream Collection
+          log += "BLE: Preparing scan...\n";
 
-          // Optimized Scan: 5s timeout + Low Latency (Android)
-          // 1. Stop any existing scan to avoid "scan already in progress" errors
           try {
             await FlutterBluePlus.stopScan();
           } catch (_) {}
 
-          // 2. Start scan
-          await FlutterBluePlus.startScan(
-            timeout: const Duration(seconds: 5),
-            androidScanMode: AndroidScanMode.lowLatency,
-          );
+          // Convert Service UUID strings to Guid objects
+          final List<Guid> serviceFilters = config.bleServiceUuids.map((uuid) => Guid(uuid)).toList();
 
-          // 3. WAIT for the scan to actually finish (timeout reached)
-          // In FlutterBluePlus 2.x, startScan completes when the scan STARTS.
-          await FlutterBluePlus.isScanning
-              .where((val) => val == false)
-              .first
-              .timeout(const Duration(seconds: 7), onTimeout: () => false);
+          // Start scan with explicit location usage and filters
+          try {
+            await FlutterBluePlus.startScan(
+              timeout: const Duration(seconds: 15),
+              withServices: serviceFilters, // CRITICAL: Required for iOS background scanning
+              androidScanMode: AndroidScanMode.lowLatency,
+              androidUsesFineLocation: true,
+            );
+          } catch (e) {
+            log += "BLE: startScan Error: $e\n";
+          }
 
-          final results = FlutterBluePlus.lastScanResults;
-          final normConfigMacs = config.bleMACs.map(_normalize).toList();
+          log += "BLE: Scan active: ${FlutterBluePlus.isScanningNow}\n";
 
-          // Log top detections for debugging
-          final topDetections = List<ScanResult>.from(results)..sort((a, b) => b.rssi.compareTo(a.rssi));
-          if (topDetections.isNotEmpty) {
-            log += "BLE Detections (${results.length}):\n";
-            for (var i = 0; i < (topDetections.length < 3 ? topDetections.length : 3); i++) {
-              final r = topDetections[i];
-              final name = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
-              log += "  - $name: ${r.rssi} dBm\n";
+          final Set<String> seenIds = {};
+          final List<ScanResult> distinctResults = [];
+
+          // Subscribe to continuous scan results
+          final subscription = FlutterBluePlus.onScanResults.listen((updatedResults) {
+            for (final r in updatedResults) {
+              final id = r.device.remoteId.str;
+              if (seenIds.add(id)) {
+                distinctResults.add(r);
+              }
+            }
+          }, onError: (e) => log += "BLE: Stream Error: $e\n");
+
+          // Wait for scan to complete or timeout
+          // We wait slightly longer than the scan timeout to ensure we capture all results
+          int elapsed = 0;
+          while (FlutterBluePlus.isScanningNow && elapsed < 16) {
+            await Future.delayed(const Duration(seconds: 1));
+            elapsed++;
+            if (elapsed % 3 == 0) {
+              log += "BLE: Scanning... (${distinctResults.length} found)\n";
             }
           }
 
+          await subscription.cancel();
+          try {
+            await FlutterBluePlus.stopScan();
+          } catch (_) {}
+
+          final results = distinctResults;
+          final normConfigMacs = config.bleMACs.map(_normalize).toList();
+          log += "BLE: Matching ${results.length} total found devices against: $normConfigMacs\n";
+
           for (var r in results) {
-            final normMac = _normalize(r.device.remoteId.str);
+            final rawMac = r.device.remoteId.str;
+            final normMac = _normalize(rawMac);
             final deviceName = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
             final normName = _normalize(deviceName);
 
-            bool isMatch = false;
-            if (config.bleDeviceNames.any((n) => _normalize(n) == normName)) {
-              isMatch = true;
-            } else if (normConfigMacs.contains(normMac)) {
-              isMatch = true;
-            }
+            bool isMacMatch = normConfigMacs.any((m) => m == normMac);
+            bool isNameMatch = config.bleDeviceNames.any((n) => _normalize(n) == normName);
 
-            if (isMatch) {
+            if (isMacMatch || isNameMatch) {
               matched = true;
-              log += "BLE: MATCH! $deviceName ($normMac) at ${r.rssi} dBm\n";
+              log += "BLE: MATCH! $deviceName ($rawMac) RSSI: ${r.rssi}\n";
               break;
             }
           }
-          if (!matched) log += "BLE: NO MATCH (${results.length} devices found)\n";
+
+          if (!matched && results.isNotEmpty) {
+            log += "BLE: No match. Top 3 seen:\n";
+            results.sort((a, b) => b.rssi.compareTo(a.rssi));
+            for (var i = 0; i < (results.length < 3 ? results.length : 3); i++) {
+              final r = results[i];
+              log += "  - ${r.device.remoteId.str} (${r.device.platformName}) [${r.rssi} dBm]\n";
+            }
+          } else if (!matched) {
+            log += "BLE: Zero devices found. Check permissions and Bluetooth hardware.\n";
+          }
         } else {
-          log += "BLE Skip: BT is OFF\n";
+          log += "BLE Skip: Bluetooth Adapter is OFF or NOT SUPPORTED\n";
         }
       } catch (e) {
         log += "BLE Error: $e\n";

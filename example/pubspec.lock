@@ -463,6 +463,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.17.0"
+  network_info_plus:
+    dependency: transitive
+    description:
+      name: network_info_plus
+      sha256: "2866dadcbee2709e20d67737a1556f5675b8b0cdcf2c1659ba74bc21bffede4f"
+      url: "https://pub.dev"
+    source: hosted
+    version: "7.0.0"
+  network_info_plus_platform_interface:
+    dependency: transitive
+    description:
+      name: network_info_plus_platform_interface
+      sha256: "7e7496a8a9d8136859b8881affc613c4a21304afeb6c324bcefc4bd0aff6b94b"
+      url: "https://pub.dev"
+    source: hosted
+    version: "2.0.2"
   nm:
     dependency: transitive
     description:
@@ -772,14 +788,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.1.1"
-  wifi_scan:
-    dependency: transitive
-    description:
-      name: wifi_scan
-      sha256: "78896ea3db8838769053accd47cab02a62ead6480557e235295320603f84c9c7"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.4.1+2"
   win32:
     dependency: transitive
     description:

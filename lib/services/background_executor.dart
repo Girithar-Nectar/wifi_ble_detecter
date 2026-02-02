@@ -7,7 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' hide ServiceStatus;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:wifi_scan/wifi_scan.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:vibration/vibration.dart';
 import '../models/attendance_config.dart';
@@ -129,16 +129,16 @@ class BackgroundExecutor {
       // We need a way to deserialize DetectionResult
       // I'll add a fromJson to DetectionResult or just manual map here
       return DetectionResult(
-        isInZone: map['isInZone'],
-        byGps: map['byGps'],
-        byWifi: map['byWifi'],
-        byBle: map['byBle'],
-        distance: map['distance'],
+        isInZone: map['isInZone'] ?? false,
+        byGps: map['byGps'] ?? false,
+        byWifi: map['byWifi'] ?? false,
+        byBle: map['byBle'] ?? false,
+        distance: (map['distance'] as num?)?.toDouble(),
         diagnosticLog: map['diagnosticLog'] ?? "",
         status: ServiceStatus(
-          isGpsEnabled: map['status']['isGpsEnabled'],
-          isWifiEnabled: map['status']['isWifiEnabled'],
-          isBleEnabled: map['status']['isBleEnabled'],
+          isGpsEnabled: map['status']?['isGpsEnabled'] ?? false,
+          isWifiEnabled: map['status']?['isWifiEnabled'] ?? false,
+          isBleEnabled: map['status']?['isBleEnabled'] ?? false,
         ),
       );
     } catch (_) {
@@ -310,7 +310,7 @@ class BackgroundExecutor {
         'diagnosticLog': 'Scan skipped: Outside of shift hours (${now.hour}:${now.minute}).',
         'status': {
           'isGpsEnabled': await Geolocator.isLocationServiceEnabled(),
-          'isWifiEnabled': (await WiFiScan.instance.canStartScan()) == CanStartScan.yes,
+          'isWifiEnabled': (await NetworkInfo().getWifiBSSID()) != null,
           'isBleEnabled':
               await FlutterBluePlus.isSupported && await FlutterBluePlus.adapterState.first == BluetoothAdapterState.on,
         },
