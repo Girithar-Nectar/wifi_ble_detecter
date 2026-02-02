@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
 import 'services/background_executor.dart';
 import 'services/detection_fusion.dart';
 import 'models/attendance_config.dart';
+import 'attendance_tracker_platform_interface.dart';
 
 export 'models/attendance_config.dart';
 export 'services/detection_fusion.dart';
@@ -19,20 +20,27 @@ class AttendanceTracker {
   /// Check if all critical permissions (Location, Bluetooth) are granted.
   Future<bool> hasPermissions() async {
     try {
+      final sdkInt = await AttendanceTrackerPlatform.instance.getAndroidSdkInt() ?? 0;
+
       // Check location permission via Geolocator
       final locStatus = await Geolocator.checkPermission();
       final hasLoc = locStatus == LocationPermission.always || locStatus == LocationPermission.whileInUse;
+      // Check Nearby Wi-Fi Devices (Android 13+)
+      bool hasNearbyWifi = true;
+      if (sdkInt >= 33) {
+        hasNearbyWifi = await Permission.nearbyWifiDevices.isGranted;
+      }
+
+      // Check Bluetooth permissions (Android 12+)
+      bool hasBle = true;
+      if (sdkInt >= 31) {
+        hasBle = await Permission.bluetoothScan.isGranted && await Permission.bluetoothConnect.isGranted;
+      }
 
       // Check notification permission via permission_handler
       final hasNotification = await Permission.notification.isGranted;
 
-      // For Bluetooth, the user wants us to rely on FlutterBluePlus
-      // On modern Android, the 'permission' is BLUETOOTH_SCAN/CONNECT
-      // FBP usually handles this internally if the manifest is correct,
-      // but we'll check Scan permission to be safe.
-      final hasBleScan = await Permission.bluetoothScan.isGranted;
-
-      return hasLoc && hasNotification && hasBleScan;
+      return hasLoc && hasNotification && hasBle && hasNearbyWifi;
     } catch (e) {
       print('AttendanceTracker: Error checking permissions: $e');
       return false;
@@ -47,53 +55,59 @@ class AttendanceTracker {
       // Small delay to let the app settle
       await Future.delayed(const Duration(milliseconds: 500));
 
-      // 1. Request location permission using geolocator
-      print('AttendanceTracker: Requesting geolocation permission (GEOLOCATOR)...');
-      final locStatus = await Geolocator.requestPermission();
-      print('AttendanceTracker: Geolocation status received: $locStatus');
+      // 0. Get SDK version to know what to request
+      final sdkInt = await AttendanceTrackerPlatform.instance.getAndroidSdkInt() ?? 0;
+      print('AttendanceTracker: Starting permission sequence for Android API $sdkInt');
 
-      if (locStatus == LocationPermission.denied || locStatus == LocationPermission.deniedForever) {
-        print('AttendanceTracker: Geolocation denied - aborting rest');
-        return false;
-      }
+      // 1. Request ALL Runtime Permissions in ONE BATCH to prevent UI conflicts
+      print('AttendanceTracker: Requesting runtime permission BATCH...');
+      final Map<Permission, PermissionStatus> statuses = await [
+        Permission.location,
+        Permission.notification,
+        if (sdkInt >= 31) Permission.bluetoothScan,
+        if (sdkInt >= 31) Permission.bluetoothConnect,
+        if (sdkInt >= 33) Permission.nearbyWifiDevices,
+      ].request();
 
-      // 2. Ensure Location Services (GPS) are actually ON
+      print('AttendanceTracker: Batch request finished: $statuses');
+
+      // 2. Wait for system UI to settle completely
+      print('AttendanceTracker: Waiting for UI to settle...');
+      await Future.delayed(const Duration(milliseconds: 1500));
+
+      // 3. Hardware / Service Level Prompts (Settings Panels)
+      print('AttendanceTracker: Checking hardware services...');
+
+      // 3a. GPS (Location Services)
+      final locStatus = await Geolocator.checkPermission();
       bool gpsEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!gpsEnabled) {
-        print('AttendanceTracker: GPS is OFF. Prompting user...');
-        // On Android, this will open the location settings
-        // On iOS, this usually doesn't do anything or returns immediately
-        // but it's good practice to check.
+      if (!gpsEnabled && (locStatus == LocationPermission.always || locStatus == LocationPermission.whileInUse)) {
+        print('AttendanceTracker: GPS is OFF but permission GRANTED. Prompting user...');
         gpsEnabled = await ensureLocationServiceEnabled();
-        if (!gpsEnabled) {
-          print('AttendanceTracker: User did not enable GPS.');
-          // We don't necessarily abort here if they have WiFi/BLE, but GPS is critical for accuracy
+      }
+
+      // 3c. Wi-Fi Power
+      bool wifiPermissionGranted = sdkInt < 33 || (statuses[Permission.nearbyWifiDevices]?.isGranted ?? false);
+      if (wifiPermissionGranted) {
+        bool wifiOn = await isWifiEnabled();
+        if (!wifiOn) {
+          print('AttendanceTracker: Wi-Fi is OFF. Displaying Settings Panel...');
+          // Don't even try programmatic toggle as it's unreliable and causes conflicts
+          wifiOn = await ensureWifiEnabled();
         }
       }
 
-      // 3. Request Bluetooth runtime permissions (Android 12+)
-      print('AttendanceTracker: Requesting Bluetooth runtime permissions...');
-      final bleStatuses = await [Permission.bluetoothScan, Permission.bluetoothConnect].request();
-      final bleGranted = bleStatuses[Permission.bluetoothScan] == PermissionStatus.granted;
-      print('AttendanceTracker: Bluetooth permissions: $bleStatuses');
-
-      // 4. Attempt to turn on Bluetooth hardware
-      if (bleGranted) {
-        print('AttendanceTracker: Powering on Bluetooth (FBP)...');
+      // 3b. Bluetooth Power
+      bool blePermissionGranted = sdkInt < 31 || (statuses[Permission.bluetoothConnect]?.isGranted ?? false);
+      if (blePermissionGranted) {
+        print('AttendanceTracker: Attempting to power on Bluetooth...');
         try {
-          // turnOn() only works on Android. On iOS it returns false or errors.
           await FlutterBluePlus.turnOn().timeout(const Duration(seconds: 2));
-        } catch (e) {
-          print('AttendanceTracker: Bluetooth turnOn() failed or timed out: $e');
-        }
+        } catch (_) {}
       }
-
-      // 5. Request notification LAST
-      print('AttendanceTracker: Requesting notification permission...');
-      await Permission.notification.request();
 
       final hasAll = await hasPermissions();
-      print('AttendanceTracker: Permission request sequence finished. All granted: $hasAll');
+      print('AttendanceTracker: Permission request sequence complete. All granted: $hasAll');
       return hasAll;
     } catch (e, stack) {
       print('AttendanceTracker: FATAL error requesting permissions: $e');
@@ -117,20 +131,54 @@ class AttendanceTracker {
     return await Geolocator.isLocationServiceEnabled();
   }
 
+  /// Attempts to prompt the user to enable Wi-Fi hardware.
+  Future<bool> ensureWifiEnabled() async {
+    bool enabled = await isWifiEnabled();
+    if (enabled) return true;
+
+    await openWifiSettings();
+
+    // Give user time to toggle
+    await Future.delayed(const Duration(seconds: 2));
+
+    return await isWifiEnabled();
+  }
+
+  /// Check if Wi-Fi hardware is enabled.
+  Future<bool> isWifiEnabled() async {
+    try {
+      return await AttendanceTrackerPlatform.instance.isWifiEnabled() ?? false;
+    } catch (_) {
+      // Fallback: if we can't check, assume true if we have a BSSID or false otherwise
+      final wifiBssid = await NetworkInfo().getWifiBSSID();
+      return wifiBssid != null;
+    }
+  }
+
+  /// Programmatically set Wi-Fi state (deprecated and restricted on Android 10+).
+  /// Returns true if successful. On Android 10+, this will likely return false.
+  Future<bool> setWifiEnabled(bool enabled) async {
+    try {
+      return await AttendanceTrackerPlatform.instance.setWifiEnabled(enabled) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Open Wi-Fi settings.
+  Future<void> openWifiSettings() async {
+    try {
+      await AttendanceTrackerPlatform.instance.openWifiSettings();
+    } catch (_) {}
+  }
+
   /// Check if all required services (GPS, Wi-Fi, Bluetooth) are enabled hardware-wise.
   Future<ServiceStatus> checkServicesStatus() async {
     // 1. GPS
     final isGpsEnabled = await Geolocator.isLocationServiceEnabled();
 
-    // 2. Wi-Fi (Rough check: if we can get BSSID or at least it doesn't throw)
-    bool isWifiEnabled = false;
-    try {
-      final wifiBssid = await NetworkInfo().getWifiBSSID();
-      isWifiEnabled = wifiBssid != null;
-      // If BSSID is null, it might just be not connected.
-      // On some platforms/versions, we might need more complex checks,
-      // but if we are in range of office WiFi, it should be connected or at least visible.
-    } catch (_) {}
+    // 2. Wi-Fi
+    final wifiOn = await isWifiEnabled();
 
     // 3. BLE with timeout
     bool isBleEnabled = false;
@@ -144,7 +192,7 @@ class AttendanceTracker {
       }
     } catch (_) {}
 
-    return ServiceStatus(isGpsEnabled: isGpsEnabled, isWifiEnabled: isWifiEnabled, isBleEnabled: isBleEnabled);
+    return ServiceStatus(isGpsEnabled: isGpsEnabled, isWifiEnabled: wifiOn, isBleEnabled: isBleEnabled);
   }
 
   /// Initialize the plugin with the provided configuration.

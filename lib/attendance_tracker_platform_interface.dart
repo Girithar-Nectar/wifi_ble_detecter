@@ -26,4 +26,20 @@ abstract class AttendanceTrackerPlatform extends PlatformInterface {
   Future<String?> getPlatformVersion() {
     throw UnimplementedError('platformVersion() has not been implemented.');
   }
+
+  Future<int?> getAndroidSdkInt() {
+    throw UnimplementedError('getAndroidSdkInt() has not been implemented.');
+  }
+
+  Future<bool?> isWifiEnabled() {
+    throw UnimplementedError('isWifiEnabled() has not been implemented.');
+  }
+
+  Future<bool?> openWifiSettings() {
+    throw UnimplementedError('openWifiSettings() has not been implemented.');
+  }
+
+  Future<bool?> setWifiEnabled(bool enabled) {
+    throw UnimplementedError('setWifiEnabled() has not been implemented.');
+  }
 }

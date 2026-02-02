@@ -3,6 +3,7 @@ import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/attendance_config.dart';
+import '../attendance_tracker_platform_interface.dart';
 
 class ServiceStatus {
   final bool isGpsEnabled;
@@ -102,11 +103,17 @@ class DetectionFusion {
         final wifiBssid = await info.getWifiBSSID();
 
         // On Android, we need location permission to get any Wi-Fi info.
-        // If we can get a BSSID, the hardware is clearly ON.
-        enabled = wifiBssid != null;
+        // We use the native check for more accuracy on hardware state.
+        try {
+          enabled = await AttendanceTrackerPlatform.instance.isWifiEnabled() ?? (wifiBssid != null);
+        } catch (_) {
+          enabled = wifiBssid != null;
+        }
 
         final locPerm = await Geolocator.checkPermission();
-        log += "Wi-Fi Status: LocPerm=$locPerm, SSID=${wifiSsid != null}, BSSID=${wifiBssid != null}\n";
+        final wifiPerm = await Permission.nearbyWifiDevices.status;
+        log +=
+            "Wi-Fi Status: HardwareEnabled=$enabled, LocPerm=$locPerm, NearbyWifiPerm=$wifiPerm, SSID=${wifiSsid != null}, BSSID=${wifiBssid != null}\n";
 
         if (wifiBssid != null) {
           final normBssid = _normalize(wifiBssid);
@@ -122,7 +129,7 @@ class DetectionFusion {
             log += "Wi-Fi: Connected to '$cleanSsid' ($wifiBssid - Not in config)\n";
           }
         } else {
-          log += "Wi-Fi Skip: Not connected or Location permission missing (required for SSID/BSSID)\n";
+          log += "Wi-Fi Skip: Not connected or hardware OFF. (Requires Location ON + Permission to see connectivity)\n";
         }
       } catch (e) {
         log += "Wi-Fi Error: $e\n";
