@@ -12,6 +12,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:vibration/vibration.dart';
 import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
 import '../models/attendance_config.dart';
+import '../attendance_tracker_platform_interface.dart';
 import 'detection_fusion.dart';
 
 @pragma('vm:entry-point')
@@ -311,7 +312,7 @@ class BackgroundExecutor {
         'diagnosticLog': 'Scan skipped: Outside of shift hours (${now.hour}:${now.minute}).',
         'status': {
           'isGpsEnabled': await Geolocator.isLocationServiceEnabled(),
-          'isWifiEnabled': (await NetworkInfo().getWifiBSSID()) != null,
+          'isWifiEnabled': await AttendanceTrackerPlatform.instance.isWifiEnabled() ?? false,
           'isBleEnabled':
               await FlutterBluePlus.isSupported && await FlutterBluePlus.adapterState.first == BluetoothAdapterState.on,
         },

@@ -58,26 +58,73 @@ class DetectionFusion {
       try {
         enabled = await Geolocator.isLocationServiceEnabled();
         if (enabled && config.officePoints.isNotEmpty) {
-          final position = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(accuracy: LocationAccuracy.high, timeLimit: Duration(seconds: 5)),
-          );
+          Position? position;
 
-          log += "GPS: Acquired (${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)})\n";
-
-          double? minDistance;
-          for (final pointStr in config.officePoints) {
-            final point = AttendanceConfig.parseWktPoint(pointStr);
-            if (point == null) continue;
-            final d = Geolocator.distanceBetween(position.latitude, position.longitude, point.key, point.value);
-            if (minDistance == null || d < minDistance) minDistance = d;
+          // STAGE 1: Balanced Accuracy (Fast, Cell/Wi-Fi based)
+          try {
+            log += "GPS: Attempting Balanced Fix (6s)...\n";
+            position = await Geolocator.getCurrentPosition(
+              locationSettings: const LocationSettings(
+                accuracy: LocationAccuracy.low, // Try low first for speed
+                timeLimit: Duration(seconds: 6),
+              ),
+            );
+            log += "GPS: Balanced fix acquired.\n";
+          } catch (e) {
+            log += "GPS: Balanced fix timed out or failed ($e).\n";
           }
 
-          distance = minDistance;
-          if (distance != null && distance <= config.geofenceRadius) {
-            matched = true;
-            log += "GPS: MATCH (${distance.toStringAsFixed(1)}m)\n";
-          } else if (distance != null) {
-            log += "GPS: NO MATCH (${distance.toStringAsFixed(1)}m from office)\n";
+          // STAGE 2: High Accuracy (Slower, Satellite based)
+          if (position == null) {
+            try {
+              log += "GPS: Attempting High Accuracy Fix (15s)...\n";
+              position = await Geolocator.getCurrentPosition(
+                locationSettings: const LocationSettings(
+                  accuracy: LocationAccuracy.medium, // Medium is often more reliable than High in indoors
+                  timeLimit: Duration(seconds: 15),
+                ),
+              );
+              log += "GPS: High/Medium fix acquired.\n";
+            } catch (e) {
+              log += "GPS: High fix failed ($e).\n";
+            }
+          }
+
+          // STAGE 3: Fallback to Last Known Position
+          if (position == null) {
+            log += "GPS: Trying fallback to last known...\n";
+            position = await Geolocator.getLastKnownPosition();
+            if (position != null) {
+              final age = DateTime.now().difference(position.timestamp);
+              if (age.inMinutes < 30) {
+                log += "GPS: Using last known fix (${age.inMinutes}m old).\n";
+              } else {
+                log += "GPS: Last known fix too old (${age.inMinutes}m).\n";
+                position = null;
+              }
+            }
+          }
+
+          if (position != null) {
+            log += "GPS: Pos (${position.latitude.toStringAsFixed(6)}, ${position.longitude.toStringAsFixed(6)})\n";
+
+            double? minDistance;
+            for (final pointStr in config.officePoints) {
+              final point = AttendanceConfig.parseWktPoint(pointStr);
+              if (point == null) continue;
+              final d = Geolocator.distanceBetween(position.latitude, position.longitude, point.key, point.value);
+              if (minDistance == null || d < minDistance) minDistance = d;
+            }
+
+            distance = minDistance;
+            if (distance != null && distance <= config.geofenceRadius) {
+              matched = true;
+              log += "GPS: MATCH (${distance.toStringAsFixed(1)}m)\n";
+            } else if (distance != null) {
+              log += "GPS: NO MATCH (${distance.toStringAsFixed(1)}m from office)\n";
+            }
+          } else {
+            log += "GPS Skip: Could not obtain any location fix.\n";
           }
         } else {
           log += "GPS Skip: ${config.officePoints.isEmpty ? "No Config" : "Service OFF"}\n";
@@ -102,8 +149,6 @@ class DetectionFusion {
         final wifiSsid = await info.getWifiName();
         final wifiBssid = await info.getWifiBSSID();
 
-        // On Android, we need location permission to get any Wi-Fi info.
-        // We use the native check for more accuracy on hardware state.
         try {
           enabled = await AttendanceTrackerPlatform.instance.isWifiEnabled() ?? (wifiBssid != null);
         } catch (_) {
@@ -113,13 +158,11 @@ class DetectionFusion {
         final locPerm = await Geolocator.checkPermission();
         final wifiPerm = await Permission.nearbyWifiDevices.status;
         log +=
-            "Wi-Fi Status: HardwareEnabled=$enabled, LocPerm=$locPerm, NearbyWifiPerm=$wifiPerm, SSID=${wifiSsid != null}, BSSID=${wifiBssid != null}\n";
+            "Wi-Fi Status: Enabled=$enabled, LocPerm=$locPerm, NearbyWifiPerm=$wifiPerm, SSID=${wifiSsid != null}, BSSID=${wifiBssid != null}\n";
 
         if (wifiBssid != null) {
           final normBssid = _normalize(wifiBssid);
           final normConfigBssids = config.wifiBSSIDs.map(_normalize).toList();
-
-          // Clean SSID (remove quotes if present)
           String cleanSsid = (wifiSsid ?? "").replaceAll('"', '');
 
           if ((cleanSsid.isNotEmpty && config.wifiSSIDs.contains(cleanSsid)) || normConfigBssids.contains(normBssid)) {
@@ -129,7 +172,7 @@ class DetectionFusion {
             log += "Wi-Fi: Connected to '$cleanSsid' ($wifiBssid - Not in config)\n";
           }
         } else {
-          log += "Wi-Fi Skip: Not connected or hardware OFF. (Requires Location ON + Permission to see connectivity)\n";
+          log += "Wi-Fi Skip: Not connected or hardware OFF.\n";
         }
       } catch (e) {
         log += "Wi-Fi Error: $e\n";
@@ -155,30 +198,22 @@ class DetectionFusion {
         final bleScanPerm = await Permission.bluetoothScan.status;
         final bleConnectPerm = await Permission.bluetoothConnect.status;
 
-        // enabled means hardware is active
         enabled = await FlutterBluePlus.isSupported && adapterState == BluetoothAdapterState.on;
 
         log +=
             "BLE Status: Adapter=$adapterState, Supported=${await FlutterBluePlus.isSupported}, LocPerm=$locPerm, ScanPerm=$bleScanPerm, ConnectPerm=$bleConnectPerm\n";
 
         if (enabled) {
-          // Optimized Scan v3: 10s window + Stream Collection
           log += "BLE: Preparing scan...\n";
-          // ... rest of the logic remains the same ...
-          // Wait, I should keep the rest of the logic in the replacement chunk
-
           try {
             await FlutterBluePlus.stopScan();
           } catch (_) {}
 
-          // Convert Service UUID strings to Guid objects
           final List<Guid> serviceFilters = config.bleServiceUuids.map((uuid) => Guid(uuid)).toList();
-
-          // Start scan with explicit location usage and filters
           try {
             await FlutterBluePlus.startScan(
               timeout: const Duration(seconds: 15),
-              withServices: serviceFilters, // CRITICAL: Required for iOS background scanning
+              withServices: serviceFilters,
               androidScanMode: AndroidScanMode.lowLatency,
               androidUsesFineLocation: true,
             );
@@ -187,11 +222,9 @@ class DetectionFusion {
           }
 
           log += "BLE: Scan active: ${FlutterBluePlus.isScanningNow}\n";
-
           final Set<String> seenIds = {};
           final List<ScanResult> distinctResults = [];
 
-          // Subscribe to continuous scan results
           final subscription = FlutterBluePlus.onScanResults.listen((updatedResults) {
             for (final r in updatedResults) {
               final id = r.device.remoteId.str;
@@ -201,7 +234,6 @@ class DetectionFusion {
             }
           }, onError: (e) => log += "BLE: Stream Error: $e\n");
 
-          // Wait for scan to complete or timeout
           int elapsed = 0;
           while (FlutterBluePlus.isScanningNow && elapsed < 16) {
             await Future.delayed(const Duration(seconds: 1));
@@ -244,7 +276,7 @@ class DetectionFusion {
               log += "  - ${r.device.remoteId.str} (${r.device.platformName}) [${r.rssi} dBm]\n";
             }
           } else if (!matched) {
-            log += "BLE: Zero devices found. Check permissions and Bluetooth hardware.\n";
+            log += "BLE: Zero devices found.\n";
           }
         } else {
           log += "BLE Skip: Bluetooth Adapter is OFF or NOT SUPPORTED\n";
@@ -255,7 +287,6 @@ class DetectionFusion {
       return _ScanTaskResult(matched: matched, enabled: enabled, log: log);
     });
 
-    // Run parallel
     final results = await Future.wait([gpsTask, wifiTask, bleTask]);
     final gpsR = results[0];
     final wifiR = results[1];
