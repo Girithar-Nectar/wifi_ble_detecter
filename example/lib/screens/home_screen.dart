@@ -58,7 +58,7 @@ class _HomeScreenState extends State<HomeScreen> {
         officePoints: [
           'POINT(76.9859883 10.9993243)',
         ],
-        geofenceRadius: 200.0, // Increased for indoor drift
+        geofenceRadius: 200.0, 
         wifiBSSIDs: [
           '3c:64:cf:a6:2b:d0',
           '3c:64:cf:a6:2b:ce',
