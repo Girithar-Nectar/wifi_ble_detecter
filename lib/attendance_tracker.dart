@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart' hide ServiceStatus;
 import 'package:network_info_plus/network_info_plus.dart';
@@ -20,24 +21,29 @@ class AttendanceTracker {
   /// Check if all critical permissions (Location, Bluetooth) are granted.
   Future<bool> hasPermissions() async {
     try {
+      final isIOS = Platform.isIOS;
       final sdkInt = await AttendanceTrackerPlatform.instance.getAndroidSdkInt() ?? 0;
 
       // Check location permission via Geolocator
       final locStatus = await Geolocator.checkPermission();
       final hasLoc = locStatus == LocationPermission.always || locStatus == LocationPermission.whileInUse;
-      // Check Nearby Wi-Fi Devices (Android 13+)
+
+      // Check Nearby Wi-Fi Devices (Android 13+ only)
       bool hasNearbyWifi = true;
-      if (sdkInt >= 33) {
+      if (!isIOS && sdkInt >= 33) {
         hasNearbyWifi = await Permission.nearbyWifiDevices.isGranted;
       }
 
-      // Check Bluetooth permissions (Android 12+)
+      // Check Bluetooth permissions (Android 12+ only)
       bool hasBle = true;
-      if (sdkInt >= 31) {
+      if (!isIOS && sdkInt >= 31) {
         hasBle = await Permission.bluetoothScan.isGranted && await Permission.bluetoothConnect.isGranted;
+      } else if (isIOS) {
+        // On iOS, Bluetooth permission is handled by flutter_blue_plus automatically
+        hasBle = true;
       }
 
-      // Check notification permission via permission_handler
+      // Check notification permission
       final hasNotification = await Permission.notification.isGranted;
 
       return hasLoc && hasNotification && hasBle && hasNearbyWifi;
@@ -55,18 +61,42 @@ class AttendanceTracker {
       // Small delay to let the app settle
       await Future.delayed(const Duration(milliseconds: 500));
 
-      // 0. Get SDK version to know what to request
+      // 0. Detect platform
+      final isIOS = Platform.isIOS;
       final sdkInt = await AttendanceTrackerPlatform.instance.getAndroidSdkInt() ?? 0;
-      print('AttendanceTracker: Starting permission sequence for Android API $sdkInt');
+      print('AttendanceTracker: Platform: ${isIOS ? "iOS" : "Android API $sdkInt"}');
+
+      // iOS-specific: Request location via Geolocator FIRST
+      if (isIOS) {
+        final locStatus = await Geolocator.checkPermission();
+        print('AttendanceTracker: iOS Location status: $locStatus');
+
+        if (locStatus == LocationPermission.denied) {
+          print('AttendanceTracker: Requesting iOS location permission via Geolocator...');
+          final newStatus = await Geolocator.requestPermission();
+          print('AttendanceTracker: iOS Location permission result: $newStatus');
+
+          if (newStatus == LocationPermission.deniedForever) {
+            print('AttendanceTracker: Location permanently denied. Opening Settings...');
+            await Geolocator.openLocationSettings();
+            await Future.delayed(const Duration(seconds: 2));
+          }
+        } else if (locStatus == LocationPermission.deniedForever) {
+          print('AttendanceTracker: Location permanently denied. Please enable in Settings.');
+          await Geolocator.openAppSettings();
+          await Future.delayed(const Duration(seconds: 2));
+        }
+      }
 
       // 1. Request ALL Runtime Permissions in ONE BATCH to prevent UI conflicts
       print('AttendanceTracker: Requesting runtime permission BATCH...');
       final Map<Permission, PermissionStatus> statuses = await [
-        Permission.location,
+        if (!isIOS) Permission.location, // Android uses permission_handler
         Permission.notification,
-        if (sdkInt >= 31) Permission.bluetoothScan,
-        if (sdkInt >= 31) Permission.bluetoothConnect,
-        if (sdkInt >= 33) Permission.nearbyWifiDevices,
+        if (!isIOS && sdkInt >= 31) Permission.bluetoothScan,
+        if (!isIOS && sdkInt >= 31) Permission.bluetoothConnect,
+        if (!isIOS && sdkInt >= 33) Permission.nearbyWifiDevices,
+        if (isIOS) Permission.bluetooth,
       ].request();
 
       print('AttendanceTracker: Batch request finished: $statuses');
@@ -87,23 +117,31 @@ class AttendanceTracker {
       }
 
       // 3c. Wi-Fi Power
-      bool wifiPermissionGranted = sdkInt < 33 || (statuses[Permission.nearbyWifiDevices]?.isGranted ?? false);
+      bool wifiPermissionGranted = isIOS || sdkInt < 33 || (statuses[Permission.nearbyWifiDevices]?.isGranted ?? false);
       if (wifiPermissionGranted) {
         bool wifiOn = await isWifiEnabled();
         if (!wifiOn) {
           print('AttendanceTracker: Wi-Fi is OFF. Displaying Settings Panel...');
-          // Don't even try programmatic toggle as it's unreliable and causes conflicts
           wifiOn = await ensureWifiEnabled();
         }
       }
 
       // 3b. Bluetooth Power
-      bool blePermissionGranted = sdkInt < 31 || (statuses[Permission.bluetoothConnect]?.isGranted ?? false);
+      bool blePermissionGranted = isIOS || sdkInt < 31 || (statuses[Permission.bluetoothConnect]?.isGranted ?? false);
       if (blePermissionGranted) {
         print('AttendanceTracker: Attempting to power on Bluetooth...');
         try {
-          await FlutterBluePlus.turnOn().timeout(const Duration(seconds: 2));
-        } catch (_) {}
+          await FlutterBluePlus.turnOn().timeout(
+            const Duration(seconds: 2),
+            onTimeout: () {
+              print('AttendanceTracker: Bluetooth turnOn timed out');
+            },
+          );
+          print('AttendanceTracker: Bluetooth turned on successfully');
+        } catch (e) {
+          // This catches "Bad state: No element" and other bluetooth errors
+          print('AttendanceTracker: Bluetooth turnOn failed (expected if permission denied): $e');
+        }
       }
 
       final hasAll = await hasPermissions();

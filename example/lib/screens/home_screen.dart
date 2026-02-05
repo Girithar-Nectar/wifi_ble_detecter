@@ -53,75 +53,85 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _initializePlugin() async {
     try {
-      // 1. Basic initialization (fast)
-      await _tracker.initialize(AttendanceConfig(
-        officePoints: [
-          'POINT(76.9859883 10.9993243)',
-          'POINT(76.9326375 10.990581)', ///giri location
-        ],
-        geofenceRadius: 200.0, 
-        wifiBSSIDs: [
-          '3c:64:cf:a6:2b:d0',
-          '3c:64:cf:a6:2b:ce',
-          '3c:64:cf:a6:31:6e',
-          '3c:64:cf:a6:31:70',
-          '3c:64:cf:a5:fc:48',
-          '3c:64:cf:a5:fc:46',
-          'f6:a6:4d:e7:d2:57'  //giri wifi
-        ],
-        bleMACs: [
-          'd0:5f:64:52:05:e1',
-          'd0:5f:64:52:05:e2',
-        ],
-        shiftStartMs: 0, // 12:00 AM
-        shiftEndMs: 86399000, // 11:59 PM (Full day for testing)
-        welcomeTitle: 'Aloha!',
-        welcomeBody: 'Welcome to the office. Have a productive day!',
-        outOfZoneTitle: 'Leaving?',
-        shiftEndedTitle: 'Shift Ended',
-        shiftEndedBody: 'Shift ended. Have a great day!',
-        outOfZoneBody: 'Safe travels! Don\'t forget to check out if you\'re done.',
-        welcomeVibration: [0, 500, 200, 500, 200, 500], // SOS Pattern for entry
-        outOfZoneVibration: [0, 200, 100, 200], // Rapid pulses for exit
-        welcomeSound: 'inzone',
-        outOfZoneSound: 'outofzone',
-        enableTts: false,
-        scanIntervalSeconds: 2, // Scan every 30 seconds for better responsiveness
-      ));
-
-      // 2. Handle Tracking & Permissions (First-run aware)
-      final hasPerms = await _tracker.hasPermissions();
-      debugPrint('AttendanceTracker: Has all permissions: $hasPerms');
-
-      if (hasPerms) {
-        // Normal path: start immediately
-        debugPrint('AttendanceTracker: Starting tracking...');
-        await _tracker.startTracking();
-        await _loadInitialStatus();
-      } else {
-        // First run or permissions missing: request and then start
-        debugPrint('AttendanceTracker: Permissions missing, requesting...');
-        final granted = await _tracker.requestPermissions();
-        debugPrint('AttendanceTracker: Permissions granted: $granted');
-
-        if (granted) {
-          debugPrint('AttendanceTracker: Starting tracking after permission grant...');
-          await _tracker.startTracking();
-          await _loadInitialStatus();
-        } else {
-          debugPrint('AttendanceTracker: Critical permissions denied by user.');
-        }
-      }
-
-      // 3. Hide loading screen after everything is done
-      if (mounted) {
-        setState(() => _isInitializing = false);
-      }
+      // Force timeout after 30 seconds to prevent black screen
+      await Future.any([
+        _performInitialization(),
+        Future.delayed(const Duration(seconds: 30), () {
+          debugPrint('AttendanceTracker: Initialization timed out after 30s');
+        }),
+      ]);
     } catch (e, stackTrace) {
       debugPrint('Init Error: $e');
       debugPrint('Stack trace: $stackTrace');
+    } finally {
+      // ALWAYS exit loading screen, even on error
       if (mounted) {
         setState(() => _isInitializing = false);
+      }
+    }
+  }
+
+  Future<void> _performInitialization() async {
+    // 1. Basic initialization (fast)
+    await _tracker.initialize(AttendanceConfig(
+      officePoints: [
+        'POINT(76.9859883 10.9993243)',
+        'POINT(76.9326375 10.990581)',
+
+        ///giri location
+      ],
+      geofenceRadius: 200.0,
+      wifiBSSIDs: [
+        '3c:64:cf:a6:2b:d0',
+        '3c:64:cf:a6:2b:ce',
+        '3c:64:cf:a6:31:6e',
+        '3c:64:cf:a6:31:70',
+        '3c:64:cf:a5:fc:48',
+        '3c:64:cf:a5:fc:46',
+        'f6:a6:4d:e7:d2:57' //giri wifi
+      ],
+      bleMACs: [
+        'd0:5f:64:52:05:e1',
+        'd0:5f:64:52:05:e2',
+      ],
+      shiftStartMs: 0, // 12:00 AM
+      shiftEndMs: 86399000, // 11:59 PM (Full day for testing)
+      welcomeTitle: 'Aloha!',
+      welcomeBody: 'Welcome to the office. Have a productive day!',
+      outOfZoneTitle: 'Leaving?',
+      shiftEndedTitle: 'Shift Ended',
+      shiftEndedBody: 'Shift ended. Have a great day!',
+      outOfZoneBody: 'Safe travels! Don\'t forget to check out if you\'re done.',
+      welcomeVibration: [0, 500, 200, 500, 200, 500], // SOS Pattern for entry
+      outOfZoneVibration: [0, 200, 100, 200], // Rapid pulses for exit
+      welcomeSound: 'inzone',
+      outOfZoneSound: 'outofzone',
+      enableTts: false,
+      scanIntervalSeconds: 2, // Scan every 30 seconds for better responsiveness
+    ));
+
+    // 2. Handle Tracking & Permissions (First-run aware)
+    final hasPerms = await _tracker.hasPermissions();
+    debugPrint('AttendanceTracker: Has all permissions: $hasPerms');
+
+    if (hasPerms) {
+      // Normal path: start immediately
+      debugPrint('AttendanceTracker: Starting tracking...');
+      await _tracker.startTracking();
+      await _loadInitialStatus();
+    } else {
+      // First run or permissions missing: request and then start
+      debugPrint('AttendanceTracker: Permissions missing, requesting...');
+      final granted = await _tracker.requestPermissions();
+      debugPrint('AttendanceTracker: Permissions granted: $granted');
+
+      if (granted) {
+        debugPrint('AttendanceTracker: Starting tracking after permission grant...');
+        await _tracker.startTracking();
+        await _loadInitialStatus();
+      } else {
+        debugPrint('AttendanceTracker: Critical permissions denied by user.');
+        // Still show UI even if permissions denied
       }
     }
   }

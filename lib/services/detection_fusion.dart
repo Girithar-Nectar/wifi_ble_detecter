@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'package:geolocator/geolocator.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -191,17 +192,28 @@ class DetectionFusion {
         }
 
         final adapterState = await FlutterBluePlus.adapterState.first.timeout(
-          const Duration(seconds: 1),
+          Duration(seconds: Platform.isIOS ? 3 : 1),
           onTimeout: () => BluetoothAdapterState.unknown,
         );
         final locPerm = await Geolocator.checkPermission();
         final bleScanPerm = await Permission.bluetoothScan.status;
         final bleConnectPerm = await Permission.bluetoothConnect.status;
+        final blePerm = await Permission.bluetooth.status;
 
-        enabled = await FlutterBluePlus.isSupported && adapterState == BluetoothAdapterState.on;
+        bool isSupported = await FlutterBluePlus.isSupported;
+        enabled = isSupported && adapterState == BluetoothAdapterState.on;
+
+        // iOS Resilience: If adapter state is unknown/unauthorized but we have permission,
+        // it might just be the background isolate taking time to sync.
+        if (Platform.isIOS && !enabled && isSupported) {
+          if (blePerm == PermissionStatus.granted) {
+            log += "BLE: iOS Fallback - Permission GRANTED but adapter is $adapterState. Attempting scan anyway...\n";
+            enabled = true;
+          }
+        }
 
         log +=
-            "BLE Status: Adapter=$adapterState, Supported=${await FlutterBluePlus.isSupported}, LocPerm=$locPerm, ScanPerm=$bleScanPerm, ConnectPerm=$bleConnectPerm\n";
+            "BLE Status: Adapter=$adapterState, Supported=$isSupported, LocPerm=$locPerm, ScanPerm=$bleScanPerm, ConnectPerm=$bleConnectPerm, iOSBlePerm=$blePerm\n";
 
         if (enabled) {
           log += "BLE: Preparing scan...\n";

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show Platform;
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
@@ -7,7 +8,6 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' hide ServiceStatus;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:vibration/vibration.dart';
 import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
@@ -16,11 +16,22 @@ import '../attendance_tracker_platform_interface.dart';
 import 'detection_fusion.dart';
 
 @pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  BackgroundExecutor.onStart(service);
+}
+
+@pragma('vm:entry-point')
+Future<bool> onIosBackground(ServiceInstance service) async {
+  return await BackgroundExecutor.onIosBackground(service);
+}
+
+@pragma('vm:entry-point')
 class BackgroundExecutor {
   static const String _configKey = 'attendance_config_cache';
   static final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
   static FlutterTts? _tts;
 
+  @pragma('vm:entry-point')
   static FlutterTts _getTts() {
     _tts ??= FlutterTts();
     return _tts!;
@@ -92,27 +103,48 @@ class BackgroundExecutor {
         .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
         ?.createNotificationChannel(exitChannel);
 
-    await service.configure(
-      androidConfiguration: AndroidConfiguration(
-        onStart: onStart,
-        autoStart: false, // Don't start immediately; wait for permissions in UI
-        isForegroundMode: true,
-        notificationChannelId: 'attendance_tracker_foreground',
-        initialNotificationTitle: 'Attendance Tracking',
-        initialNotificationContent: 'Searching for office zone...',
-        foregroundServiceNotificationId: 888,
-      ),
-      iosConfiguration: IosConfiguration(autoStart: true, onForeground: onStart, onBackground: onIosBackground),
-    );
+    print('AttendanceTracker: Configuring Background Service...');
+    try {
+      await service.configure(
+        androidConfiguration: AndroidConfiguration(
+          onStart: onStart,
+          autoStart: false,
+          isForegroundMode: true,
+          notificationChannelId: 'attendance_tracker_foreground',
+          initialNotificationTitle: 'Attendance Tracking',
+          initialNotificationContent: 'Searching for office zone...',
+          foregroundServiceNotificationId: 888,
+        ),
+        iosConfiguration: IosConfiguration(autoStart: false, onForeground: onStart, onBackground: onIosBackground),
+      );
+      print('AttendanceTracker: Background Service Configured successfully.');
+    } catch (e) {
+      print('AttendanceTracker: CRITICAL Error during service.configure: $e');
+      rethrow;
+    }
   }
 
   static Future<void> start() async {
     final service = FlutterBackgroundService();
-    await service.startService();
+    print('AttendanceTracker: Attempting to start service...');
+
+    // Safety check: ensure it's configured before starting on iOS
+    if (Platform.isIOS) {
+      final isConfigured = await service.isRunning();
+      print('AttendanceTracker: iOS Service running state before start: $isConfigured');
+    }
+
+    try {
+      await service.startService();
+      print('AttendanceTracker: service.startService() called.');
+    } catch (e) {
+      print('AttendanceTracker: Error in startService: $e');
+    }
   }
 
   static Future<void> stop() async {
     final service = FlutterBackgroundService();
+    print('AttendanceTracker: Stopping service...');
     service.invoke('stopService');
   }
 
@@ -150,6 +182,14 @@ class BackgroundExecutor {
 
   @pragma('vm:entry-point')
   static void onStart(ServiceInstance service) async {
+    print('AttendanceTracker: Background isolate (onStart) entered.');
+    try {
+      DartPluginRegistrant.ensureInitialized();
+      print('AttendanceTracker: DartPluginRegistrant initialized in background isolate.');
+    } catch (e) {
+      print('AttendanceTracker: Error in DartPluginRegistrant.ensureInitialized: $e');
+    }
+
     if (service is AndroidServiceInstance) {
       // Android 14 Requirement: Must call this immediately (within 5 seconds)
       try {
@@ -160,8 +200,6 @@ class BackgroundExecutor {
     }
 
     try {
-      DartPluginRegistrant.ensureInitialized();
-
       if (service is AndroidServiceInstance) {
         service.on('setAsForeground').listen((event) {
           service.setAsForegroundService();
@@ -196,7 +234,14 @@ class BackgroundExecutor {
 
       // Ensure notifications are initialized even if onStart is called alone (AOT entry point)
       const AndroidInitializationSettings androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
-      await _notifications.initialize(settings: const InitializationSettings(android: androidSettings));
+      const DarwinInitializationSettings iosSettings = DarwinInitializationSettings(
+        requestAlertPermission: false, // Permissions already handled in UI
+        requestBadgePermission: false,
+        requestSoundPermission: false,
+      );
+      await _notifications.initialize(
+        settings: const InitializationSettings(android: androidSettings, iOS: iosSettings),
+      );
 
       // CRITICAL: Recreate notification channels in background isolate
       // Load config first to get vibration patterns
@@ -257,11 +302,6 @@ class BackgroundExecutor {
           final configJson = prefs.getString(_configKey);
           if (configJson != null) {
             final config = AttendanceConfig.fromJson(jsonDecode(configJson));
-            // We can't easily change the timer interval once started with Timer.periodic,
-            // but for this plugin, we'll re-check the config and skip if not time yet.
-            // A better way is to cancel and restart timer if config changes,
-            // but config usually changes only on app start.
-            // For now, we'll use a 15s "tick" and check if interval is met.
             final lastScan = prefs.getInt('last_scan_timestamp') ?? 0;
             final now = DateTime.now().millisecondsSinceEpoch;
             if (now - lastScan >= (config.scanIntervalSeconds * 1000)) {
@@ -283,6 +323,7 @@ class BackgroundExecutor {
   @pragma('vm:entry-point')
   static Future<bool> onIosBackground(ServiceInstance service) async {
     try {
+      print('AttendanceTracker: iOS Background Fetch isolate entered.');
       DartPluginRegistrant.ensureInitialized();
       await _runDetectionCycle(service);
       return true;
@@ -292,6 +333,7 @@ class BackgroundExecutor {
     }
   }
 
+  @pragma('vm:entry-point')
   static Future<void> _runDetectionCycle(ServiceInstance service) async {
     final prefs = await SharedPreferences.getInstance();
     final configJson = prefs.getString(_configKey);
@@ -347,12 +389,14 @@ class BackgroundExecutor {
     if (wifiRequired && !status.isWifiEnabled) missingRequired.add('Wi-Fi');
     if (bleRequired && !status.isBleEnabled) {
       missingRequired.add('Bluetooth');
-      // Attempt to auto-enable Bluetooth on Android if it's required
-      try {
-        if (await FlutterBluePlus.isSupported && await Permission.bluetoothConnect.isGranted) {
-          await FlutterBluePlus.turnOn();
-        }
-      } catch (_) {}
+      // Attempt to auto-enable Bluetooth on Android ONLY
+      if (!Platform.isIOS) {
+        try {
+          if (await FlutterBluePlus.isSupported && await Permission.bluetoothConnect.isGranted) {
+            await FlutterBluePlus.turnOn();
+          }
+        } catch (_) {}
+      }
     }
 
     if (missingRequired.isNotEmpty) {
