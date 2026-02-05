@@ -255,9 +255,14 @@ class AttendanceTracker {
 
   /// A stream of detection results as they occur in the background.
   Stream<DetectionResult> get onResult {
-    return FlutterBackgroundService().on('onUpdate').map((event) {
+    return FlutterBackgroundService().on('onUpdate').where((e) => e != null).map((event) {
       return _mapToResult(event!);
     });
+  }
+
+  /// A stream of 'ping' events from the background to verify it's alive.
+  Stream<Map<String, dynamic>> get onPing {
+    return FlutterBackgroundService().on('ping').where((e) => e != null).map((e) => e!);
   }
 
   /// Manually trigger a test vibration notification.

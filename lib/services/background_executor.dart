@@ -8,6 +8,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart' hide ServiceStatus;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:vibration/vibration.dart';
 import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
@@ -17,12 +18,12 @@ import 'detection_fusion.dart';
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
-  BackgroundExecutor.onStart(service);
+  BackgroundExecutor.executeOnStart(service);
 }
 
 @pragma('vm:entry-point')
 Future<bool> onIosBackground(ServiceInstance service) async {
-  return await BackgroundExecutor.onIosBackground(service);
+  return await BackgroundExecutor.executeOnIosBackground(service);
 }
 
 @pragma('vm:entry-point')
@@ -181,8 +182,8 @@ class BackgroundExecutor {
   }
 
   @pragma('vm:entry-point')
-  static void onStart(ServiceInstance service) async {
-    print('AttendanceTracker: Background isolate (onStart) entered.');
+  static void executeOnStart(ServiceInstance service) async {
+    print('AttendanceTracker: Background isolate (executeOnStart) entered.');
     try {
       DartPluginRegistrant.ensureInitialized();
       print('AttendanceTracker: DartPluginRegistrant initialized in background isolate.');
@@ -195,9 +196,14 @@ class BackgroundExecutor {
       try {
         await service.setAsForegroundService();
       } catch (e) {
-        debugPrint('AttendanceTracker: Failed to set foreground: $e');
+        print('AttendanceTracker: Failed to set foreground: $e');
       }
     }
+
+    // Ping Timer to let UI know background is alive
+    Timer.periodic(const Duration(seconds: 10), (timer) {
+      service.invoke('ping', {'timestamp': DateTime.now().millisecondsSinceEpoch});
+    });
 
     try {
       if (service is AndroidServiceInstance) {
@@ -251,6 +257,7 @@ class BackgroundExecutor {
       if (configJson != null) {
         config = AttendanceConfig.fromJson(jsonDecode(configJson));
         debugPrint('AttendanceTracker: Background config loaded. welcomeVib: ${config.welcomeVibration}');
+        debugPrint('AttendanceTracker: Background config json: ${config.toJson()}');
       } else {
         debugPrint('AttendanceTracker: Background config NOT found in SharedPreferences');
       }
@@ -321,14 +328,14 @@ class BackgroundExecutor {
   }
 
   @pragma('vm:entry-point')
-  static Future<bool> onIosBackground(ServiceInstance service) async {
+  static Future<bool> executeOnIosBackground(ServiceInstance service) async {
     try {
       print('AttendanceTracker: iOS Background Fetch isolate entered.');
       DartPluginRegistrant.ensureInitialized();
       await _runDetectionCycle(service);
       return true;
     } catch (e) {
-      debugPrint('AttendanceTracker: iOS Background Fetch Error: $e');
+      print('AttendanceTracker: iOS Background Fetch Error: $e');
       return false;
     }
   }
@@ -337,15 +344,24 @@ class BackgroundExecutor {
   static Future<void> _runDetectionCycle(ServiceInstance service) async {
     final prefs = await SharedPreferences.getInstance();
     final configJson = prefs.getString(_configKey);
-    if (configJson == null) return;
+    if (configJson == null) {
+      print('AttendanceTracker: No config found in background, skipping cycle.');
+      return;
+    }
 
     final config = AttendanceConfig.fromJson(jsonDecode(configJson));
     final now = DateTime.now();
 
+    print('AttendanceTracker: Starting background detection cycle at ${now.hour}:${now.minute}:${now.second}');
+
     // 1. Check if within shift hours
     if (!_isWithinShift(now, config)) {
+      print('AttendanceTracker: Outside shift hours. Handling cleanup...');
       await _handleShiftEnded(config, prefs);
-      // Still notify UI so it can update its "Loading" state and logs
+
+      // Get hardware status safely to update UI
+      final status = await _getHardwareStatus();
+
       service.invoke('onUpdate', {
         'isInZone': false,
         'byGps': false,
@@ -353,23 +369,67 @@ class BackgroundExecutor {
         'byBle': false,
         'diagnosticLog': 'Scan skipped: Outside of shift hours (${now.hour}:${now.minute}).',
         'status': {
-          'isGpsEnabled': await Geolocator.isLocationServiceEnabled(),
-          'isWifiEnabled': await AttendanceTrackerPlatform.instance.isWifiEnabled() ?? false,
-          'isBleEnabled':
-              await FlutterBluePlus.isSupported && await FlutterBluePlus.adapterState.first == BluetoothAdapterState.on,
+          'isGpsEnabled': status.isGpsEnabled,
+          'isWifiEnabled': status.isWifiEnabled,
+          'isBleEnabled': status.isBleEnabled,
         },
       });
       return;
     }
 
     // 2. Perform Detection Fusion
+    print('AttendanceTracker: Performing Detection Fusion...');
     final detection = await DetectionFusion.performScan(config);
 
     // 3. Service Guard: Check if all required sensors are on
+    print('AttendanceTracker: Checking Service Guard...');
     await _handleServiceGuard(detection, service, config);
 
     // 4. Update Status and Notifications
+    print('AttendanceTracker: Cycle complete. Updating UI and notifications...');
     await _handleDetectionResult(detection, config, prefs, service);
+  }
+
+  /// Safely gets hardware status with timeouts to prevent hangups.
+  @pragma('vm:entry-point')
+  static Future<ServiceStatus> _getHardwareStatus() async {
+    bool gps = false;
+    bool wifi = false;
+    bool ble = false;
+
+    try {
+      // GPS Status with timeout
+      gps = await Geolocator.isLocationServiceEnabled().timeout(const Duration(seconds: 2), onTimeout: () => false);
+    } catch (_) {}
+
+    try {
+      // Wi-Fi Status via platform channel or fallback
+      wifi =
+          await AttendanceTrackerPlatform.instance.isWifiEnabled().timeout(
+            const Duration(seconds: 2),
+            onTimeout: () => false,
+          ) ??
+          false;
+    } catch (_) {
+      // Fallback: Check if we have a BSSID if platform check fails
+      try {
+        final wifiBssid = await NetworkInfo().getWifiBSSID();
+        wifi = wifiBssid != null;
+      } catch (_) {}
+    }
+
+    try {
+      // BLE Status with timeout
+      if (await FlutterBluePlus.isSupported) {
+        final state = await FlutterBluePlus.adapterState.first.timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => BluetoothAdapterState.unknown,
+        );
+        ble = state == BluetoothAdapterState.on;
+      }
+    } catch (_) {}
+
+    return ServiceStatus(isGpsEnabled: gps, isWifiEnabled: wifi, isBleEnabled: ble);
   }
 
   static Future<void> _handleServiceGuard(

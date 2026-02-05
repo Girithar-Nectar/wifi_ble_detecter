@@ -13,6 +13,8 @@ class _HomeScreenState extends State<HomeScreen> {
   final _tracker = AttendanceTracker();
   DetectionResult? _lastResult;
   StreamSubscription? _resultSubscription;
+  StreamSubscription? _pingSubscription;
+  DateTime? _lastPing;
   Timer? _statusTimer;
   bool _isManualScanning = false;
   bool _isInitializing = true;
@@ -25,6 +27,15 @@ class _HomeScreenState extends State<HomeScreen> {
     // Move heavy initialization to after the first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _initializePlugin();
+    });
+
+    // Subscribe to pings to verify background health
+    _pingSubscription = _tracker.onPing.listen((event) {
+      if (mounted) {
+        setState(() {
+          _lastPing = DateTime.now();
+        });
+      }
     });
 
     // Subscribe to real-time updates from the background service
@@ -139,6 +150,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _resultSubscription?.cancel();
+    _pingSubscription?.cancel();
     _statusTimer?.cancel();
     super.dispose();
   }
@@ -339,6 +351,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final res = _lastResult!;
+    final pingText =
+        _lastPing != null ? 'Alive (${DateTime.now().difference(_lastPing!).inSeconds}s ago)' : 'No signal';
+
     return Card(
       elevation: 2,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -347,6 +362,7 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Column(
           children: [
             _buildInfoRow('GPS Distance', res.distance != null ? '${res.distance!.toStringAsFixed(1)}m' : 'Unknown'),
+            _buildInfoRow('Background Health', pingText),
             const Divider(),
             _buildSensorStatus('GPS Signal', res.status.isGpsEnabled, res.byGps),
             _buildSensorStatus('Wi-Fi Match', res.status.isWifiEnabled, res.byWifi),

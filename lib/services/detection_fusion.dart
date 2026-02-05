@@ -57,7 +57,10 @@ class DetectionFusion {
       double? distance;
       String log = "";
       try {
-        enabled = await Geolocator.isLocationServiceEnabled();
+        enabled = await Geolocator.isLocationServiceEnabled().timeout(
+          const Duration(seconds: 2),
+          onTimeout: () => false,
+        );
         if (enabled && config.officePoints.isNotEmpty) {
           Position? position;
 
@@ -147,11 +150,16 @@ class DetectionFusion {
         }
 
         final info = NetworkInfo();
-        final wifiSsid = await info.getWifiName();
-        final wifiBssid = await info.getWifiBSSID();
+        final wifiSsid = await info.getWifiName().timeout(const Duration(seconds: 2), onTimeout: () => null);
+        final wifiBssid = await info.getWifiBSSID().timeout(const Duration(seconds: 2), onTimeout: () => null);
 
         try {
-          enabled = await AttendanceTrackerPlatform.instance.isWifiEnabled() ?? (wifiBssid != null);
+          enabled =
+              await AttendanceTrackerPlatform.instance.isWifiEnabled().timeout(
+                const Duration(seconds: 2),
+                onTimeout: () => false,
+              ) ??
+              (wifiBssid != null);
         } catch (_) {
           enabled = wifiBssid != null;
         }
