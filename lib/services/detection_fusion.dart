@@ -69,7 +69,7 @@ class DetectionFusion {
             log += "GPS: Attempting Balanced Fix (6s)...\n";
             position = await Geolocator.getCurrentPosition(
               locationSettings: const LocationSettings(
-                accuracy: LocationAccuracy.low, // Try low first for speed
+                accuracy: LocationAccuracy.high,
                 timeLimit: Duration(seconds: 6),
               ),
             );
@@ -84,7 +84,7 @@ class DetectionFusion {
               log += "GPS: Attempting High Accuracy Fix (15s)...\n";
               position = await Geolocator.getCurrentPosition(
                 locationSettings: const LocationSettings(
-                  accuracy: LocationAccuracy.medium, // Medium is often more reliable than High in indoors
+                  accuracy: LocationAccuracy.medium,
                   timeLimit: Duration(seconds: 15),
                 ),
               );

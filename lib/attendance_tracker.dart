@@ -26,7 +26,10 @@ class AttendanceTracker {
 
       // Check location permission via Geolocator
       final locStatus = await Geolocator.checkPermission();
-      final hasLoc = locStatus == LocationPermission.always || locStatus == LocationPermission.whileInUse;
+      // iOS MUST have 'always' for background tracking to work reliably
+      final hasLoc = isIOS
+          ? (locStatus == LocationPermission.always)
+          : (locStatus == LocationPermission.always || locStatus == LocationPermission.whileInUse);
 
       // Check Nearby Wi-Fi Devices (Android 13+ only)
       bool hasNearbyWifi = true;
@@ -80,7 +83,16 @@ class AttendanceTracker {
             print('AttendanceTracker: Location permanently denied. Opening Settings...');
             await Geolocator.openLocationSettings();
             await Future.delayed(const Duration(seconds: 2));
+          } else if (newStatus == LocationPermission.whileInUse) {
+            print('AttendanceTracker: "While In Use" granted. Now requesting "Always" for background...');
+            // On iOS, you can only request 'always' after 'whileInUse' is granted
+            final alwaysStatus = await Geolocator.requestPermission();
+            print('AttendanceTracker: iOS Location "Always" result: $alwaysStatus');
           }
+        } else if (locStatus == LocationPermission.whileInUse) {
+          print('AttendanceTracker: Already have "While In Use". Upgrading to "Always"...');
+          final alwaysStatus = await Geolocator.requestPermission();
+          print('AttendanceTracker: iOS Location "Always" upgrade result: $alwaysStatus');
         } else if (locStatus == LocationPermission.deniedForever) {
           print('AttendanceTracker: Location permanently denied. Please enable in Settings.');
           await Geolocator.openAppSettings();
@@ -109,9 +121,10 @@ class AttendanceTracker {
       print('AttendanceTracker: Checking hardware services...');
 
       // 3a. GPS (Location Services)
-      final locStatus = await Geolocator.checkPermission();
+      final locStatusFinal = await Geolocator.checkPermission();
       bool gpsEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!gpsEnabled && (locStatus == LocationPermission.always || locStatus == LocationPermission.whileInUse)) {
+      if (!gpsEnabled &&
+          (locStatusFinal == LocationPermission.always || locStatusFinal == LocationPermission.whileInUse)) {
         print('AttendanceTracker: GPS is OFF but permission GRANTED. Prompting user...');
         gpsEnabled = await ensureLocationServiceEnabled();
       }
