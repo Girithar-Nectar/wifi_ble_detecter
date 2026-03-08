@@ -29,6 +29,8 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 @pragma('vm:entry-point')
 class BackgroundExecutor {
   static const String _configKey = 'attendance_config_cache';
+  static const String _failCountKey = 'out_of_zone_fail_count';
+  static const int _debounceThreshold = 3; // Require 3 consecutive fails before "out of zone"
   static final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
   static FlutterTts? _tts;
 
@@ -302,22 +304,20 @@ class BackgroundExecutor {
         debugPrint('AttendanceTracker: Initial detection failed: $e');
       }
 
-      // Periodic detection loop
-      Timer.periodic(const Duration(seconds: 15), (timer) async {
+      // Read config ONCE and use its interval for the timer
+      final initialPrefs = await SharedPreferences.getInstance();
+      final initialConfigJson = initialPrefs.getString(_configKey);
+      int intervalSec = 30; // sensible default
+      if (initialConfigJson != null) {
+        final cfg = AttendanceConfig.fromJson(jsonDecode(initialConfigJson));
+        intervalSec = cfg.scanIntervalSeconds.clamp(10, 300); // min 10s, max 5min
+      }
+      debugPrint('AttendanceTracker: Scan interval set to ${intervalSec}s');
+
+      // Periodic detection loop — fires at the configured interval directly
+      Timer.periodic(Duration(seconds: intervalSec), (timer) async {
         try {
-          final prefs = await SharedPreferences.getInstance();
-          final configJson = prefs.getString(_configKey);
-          if (configJson != null) {
-            final config = AttendanceConfig.fromJson(jsonDecode(configJson));
-            final lastScan = prefs.getInt('last_scan_timestamp') ?? 0;
-            final now = DateTime.now().millisecondsSinceEpoch;
-            if (now - lastScan >= (config.scanIntervalSeconds * 1000)) {
-              await _runDetectionCycle(service);
-              await prefs.setInt('last_scan_timestamp', now);
-            }
-          } else {
-            await _runDetectionCycle(service);
-          }
+          await _runDetectionCycle(service);
         } catch (e) {
           debugPrint('AttendanceTracker: Periodic cycle failed: $e');
         }
@@ -529,13 +529,17 @@ class BackgroundExecutor {
     service.invoke('onUpdate', jsonDecode(resultJson));
 
     if (isInZone && !wasInZone) {
+      // ENTERING: Reset fail counter and mark as in-zone
+      await prefs.setInt(_failCountKey, 0);
+
       String source = "";
       if (result.byGps) {
         source = " (via GPS)";
-      } else if (result.byWifi)
+      } else if (result.byWifi) {
         source = " (via Wi-Fi)";
-      else if (result.byBle)
+      } else if (result.byBle) {
         source = " (via Bluetooth)";
+      }
 
       _showNotification(
         config.welcomeTitle,
@@ -547,17 +551,33 @@ class BackgroundExecutor {
         enableTts: config.enableTts,
       );
       await prefs.setBool('was_in_zone', true);
+    } else if (isInZone && wasInZone) {
+      // STILL IN ZONE: Reset fail counter (healthy scan)
+      await prefs.setInt(_failCountKey, 0);
     } else if (!isInZone && wasInZone) {
-      _showNotification(
-        config.outOfZoneTitle,
-        config.outOfZoneBody,
-        channelId: 'attendance_exit_v51',
-        channelName: 'Attendance Exit Alerts',
-        sound: config.outOfZoneSound,
-        vibrationPattern: config.outOfZoneVibration,
-        enableTts: config.enableTts,
-      );
-      await prefs.setBool('was_in_zone', false);
+      // POTENTIALLY LEAVING: Apply debounce — require multiple consecutive fails
+      final threshold = config.exitDebounceCount.clamp(1, 10);
+      int failCount = (prefs.getInt(_failCountKey) ?? 0) + 1;
+      await prefs.setInt(_failCountKey, failCount);
+
+      debugPrint('AttendanceTracker: Out-of-zone fail count: $failCount / $threshold');
+
+      if (failCount >= threshold) {
+        // Confirmed exit after multiple consecutive fails
+        _showNotification(
+          config.outOfZoneTitle,
+          config.outOfZoneBody,
+          channelId: 'attendance_exit_v51',
+          channelName: 'Attendance Exit Alerts',
+          sound: config.outOfZoneSound,
+          vibrationPattern: config.outOfZoneVibration,
+          enableTts: config.enableTts,
+        );
+        await prefs.setBool('was_in_zone', false);
+        await prefs.setInt(_failCountKey, 0);
+      } else {
+        debugPrint('AttendanceTracker: Debouncing exit ($failCount/$_debounceThreshold). Not yet confirmed.');
+      }
     }
 
     if (service is AndroidServiceInstance) {

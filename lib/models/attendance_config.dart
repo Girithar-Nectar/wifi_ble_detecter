@@ -60,6 +60,10 @@ class AttendanceConfig {
   /// Whether to speak the notification content aloud using TTS.
   final bool enableTts;
 
+  /// Number of consecutive failed scans required before declaring "out of zone".
+  /// Higher values prevent false "leaving" notifications. Default: 3.
+  final int exitDebounceCount;
+
   AttendanceConfig({
     required this.officePoints,
     this.geofenceRadius = 100.0,
@@ -84,6 +88,7 @@ class AttendanceConfig {
     this.welcomeSound,
     this.outOfZoneSound,
     this.enableTts = false,
+    this.exitDebounceCount = 3,
   });
 
   Map<String, dynamic> toJson() {
@@ -111,6 +116,7 @@ class AttendanceConfig {
       'welcomeSound': welcomeSound,
       'outOfZoneSound': outOfZoneSound,
       'enableTts': enableTts,
+      'exitDebounceCount': exitDebounceCount,
     };
   }
 
@@ -139,6 +145,7 @@ class AttendanceConfig {
       welcomeSound: json['welcomeSound'],
       outOfZoneSound: json['outOfZoneSound'],
       enableTts: json['enableTts'] ?? false,
+      exitDebounceCount: (json['exitDebounceCount'] as num?)?.toInt() ?? 3,
     );
   }
 

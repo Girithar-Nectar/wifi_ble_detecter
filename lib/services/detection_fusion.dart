@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 import 'package:geolocator/geolocator.dart';
 import 'package:network_info_plus/network_info_plus.dart';
@@ -64,43 +65,27 @@ class DetectionFusion {
         if (enabled && config.officePoints.isNotEmpty) {
           Position? position;
 
-          // STAGE 1: Balanced Accuracy (Fast, Cell/Wi-Fi based)
+          // Single attempt: High accuracy with reasonable timeout
           try {
-            log += "GPS: Attempting Balanced Fix (6s)...\n";
+            log += "GPS: Attempting fix (8s)...\n";
             position = await Geolocator.getCurrentPosition(
               locationSettings: const LocationSettings(
                 accuracy: LocationAccuracy.high,
-                timeLimit: Duration(seconds: 6),
+                timeLimit: Duration(seconds: 8),
               ),
             );
-            log += "GPS: Balanced fix acquired.\n";
+            log += "GPS: Fix acquired.\n";
           } catch (e) {
-            log += "GPS: Balanced fix timed out or failed ($e).\n";
+            log += "GPS: Fix timed out ($e).\n";
           }
 
-          // STAGE 2: High Accuracy (Slower, Satellite based)
-          if (position == null) {
-            try {
-              log += "GPS: Attempting High Accuracy Fix (15s)...\n";
-              position = await Geolocator.getCurrentPosition(
-                locationSettings: const LocationSettings(
-                  accuracy: LocationAccuracy.medium,
-                  timeLimit: Duration(seconds: 15),
-                ),
-              );
-              log += "GPS: High/Medium fix acquired.\n";
-            } catch (e) {
-              log += "GPS: High fix failed ($e).\n";
-            }
-          }
-
-          // STAGE 3: Fallback to Last Known Position
+          // Fallback to Last Known Position (if recent)
           if (position == null) {
             log += "GPS: Trying fallback to last known...\n";
             position = await Geolocator.getLastKnownPosition();
             if (position != null) {
               final age = DateTime.now().difference(position.timestamp);
-              if (age.inMinutes < 30) {
+              if (age.inMinutes < 10) {
                 log += "GPS: Using last known fix (${age.inMinutes}m old).\n";
               } else {
                 log += "GPS: Last known fix too old (${age.inMinutes}m).\n";
@@ -230,11 +215,14 @@ class DetectionFusion {
           } catch (_) {}
 
           final List<Guid> serviceFilters = config.bleServiceUuids.map((uuid) => Guid(uuid)).toList();
+          final normConfigMacs = config.bleMACs.map(_normalize).toList();
+
+          // Use lowPower mode to save battery; lowLatency only if explicitly needed
           try {
             await FlutterBluePlus.startScan(
-              timeout: const Duration(seconds: 15),
+              timeout: const Duration(seconds: 5),
               withServices: serviceFilters,
-              androidScanMode: AndroidScanMode.lowLatency,
+              androidScanMode: AndroidScanMode.lowPower,
               androidUsesFineLocation: true,
             );
           } catch (e) {
@@ -245,23 +233,38 @@ class DetectionFusion {
           final Set<String> seenIds = {};
           final List<ScanResult> distinctResults = [];
 
+          // Listen with early exit: stop scanning as soon as we find a match
+          final completer = Completer<void>();
           final subscription = FlutterBluePlus.onScanResults.listen((updatedResults) {
             for (final r in updatedResults) {
               final id = r.device.remoteId.str;
               if (seenIds.add(id)) {
                 distinctResults.add(r);
+
+                // Early match check — stop immediately if found
+                final normMac = _normalize(id);
+                final deviceName = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
+                final normName = _normalize(deviceName);
+                bool isMacMatch = normConfigMacs.any((m) => m == normMac);
+                bool isNameMatch = config.bleDeviceNames.any((n) => _normalize(n) == normName);
+                if (isMacMatch || isNameMatch) {
+                  matched = true;
+                  log += "BLE: MATCH! $deviceName ($id) RSSI: ${r.rssi}\n";
+                  if (!completer.isCompleted) completer.complete();
+                }
               }
             }
           }, onError: (e) => log += "BLE: Stream Error: $e\n");
 
-          int elapsed = 0;
-          while (FlutterBluePlus.isScanningNow && elapsed < 16) {
-            await Future.delayed(const Duration(seconds: 1));
-            elapsed++;
-            if (elapsed % 3 == 0) {
-              log += "BLE: Scanning... (${distinctResults.length} found)\n";
-            }
-          }
+          // Wait for either: match found, scan finished, or 6s hard timeout
+          await Future.any([
+            completer.future,
+            Future.doWhile(() async {
+              await Future.delayed(const Duration(milliseconds: 500));
+              return FlutterBluePlus.isScanningNow;
+            }),
+            Future.delayed(const Duration(seconds: 6)),
+          ]);
 
           await subscription.cancel();
           try {
@@ -269,22 +272,24 @@ class DetectionFusion {
           } catch (_) {}
 
           final results = distinctResults;
-          final normConfigMacs = config.bleMACs.map(_normalize).toList();
-          log += "BLE: Matching ${results.length} total found devices against: $normConfigMacs\n";
+          log += "BLE: Found ${results.length} devices total.\n";
 
-          for (var r in results) {
-            final rawMac = r.device.remoteId.str;
-            final normMac = _normalize(rawMac);
-            final deviceName = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
-            final normName = _normalize(deviceName);
+          // If no early match, do a final pass on all collected results
+          if (!matched) {
+            for (var r in results) {
+              final rawMac = r.device.remoteId.str;
+              final normMac = _normalize(rawMac);
+              final deviceName = r.device.platformName.isNotEmpty ? r.device.platformName : r.advertisementData.advName;
+              final normName = _normalize(deviceName);
 
-            bool isMacMatch = normConfigMacs.any((m) => m == normMac);
-            bool isNameMatch = config.bleDeviceNames.any((n) => _normalize(n) == normName);
+              bool isMacMatch = normConfigMacs.any((m) => m == normMac);
+              bool isNameMatch = config.bleDeviceNames.any((n) => _normalize(n) == normName);
 
-            if (isMacMatch || isNameMatch) {
-              matched = true;
-              log += "BLE: MATCH! $deviceName ($rawMac) RSSI: ${r.rssi}\n";
-              break;
+              if (isMacMatch || isNameMatch) {
+                matched = true;
+                log += "BLE: MATCH! $deviceName ($rawMac) RSSI: ${r.rssi}\n";
+                break;
+              }
             }
           }
 

@@ -118,7 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
       welcomeSound: 'inzone',
       outOfZoneSound: 'outofzone',
       enableTts: false,
-      scanIntervalSeconds: 2, // Scan every 30 seconds for better responsiveness
+      scanIntervalSeconds: 30, // Scan every 30 seconds for good balance of responsiveness and battery
     ));
 
     // 2. Handle Tracking & Permissions (First-run aware)
