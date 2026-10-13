@@ -36,8 +36,6 @@ Future<bool> onIosBackground(ServiceInstance service) async {
 @pragma('vm:entry-point')
 class BackgroundExecutor {
   static const String configKey = 'attendance_config_cache';
-  static const String _failCountKey = 'out_of_zone_fail_count';
-  static const String _wasInZoneKey = 'was_in_zone';
   static final FlutterLocalNotificationsPlugin _notifications = FlutterLocalNotificationsPlugin();
   static FlutterTts? _tts;
   static Timer? _scanTimer;
@@ -344,7 +342,6 @@ class BackgroundExecutor {
       print('AttendanceTracker: No config found in background, skipping cycle.');
       return;
     }
-    final prefs = await SharedPreferences.getInstance();
     final now = DateTime.now();
 
     print('AttendanceTracker: Starting background detection cycle ($trigger) at ${now.hour}:${now.minute}:${now.second}');
@@ -363,7 +360,7 @@ class BackgroundExecutor {
         timestamp: now,
         diagnosticLog: 'Scan skipped: Outside of shift hours (${now.hour}:${now.minute}).',
       );
-      await _handleShiftEnded(config, prefs, result, service);
+      await _handleShiftEnded(config, result, service);
       await _publishResult(result, service);
       await EventUploader.uploadPending(config);
       return;
@@ -380,7 +377,7 @@ class BackgroundExecutor {
 
     // 4. Update Status and Notifications
     print('AttendanceTracker: Cycle complete. Updating UI and notifications...');
-    await _handleDetectionResult(detection, config, prefs, service);
+    await _handleDetectionResult(detection, config, service);
     await EventUploader.uploadPending(config);
   }
 
@@ -506,18 +503,22 @@ class BackgroundExecutor {
   static Future<void> _handleDetectionResult(
     DetectionResult result,
     AttendanceConfig config,
-    SharedPreferences prefs,
     ServiceInstance service,
   ) async {
-    final wasInZone = prefs.getBool(_wasInZoneKey) ?? false;
+    // Zone state lives natively so the UI isolate (NFC/QR tap-out) and this
+    // service share one copy.
+    final platform = AttendanceTrackerPlatform.instance;
+    final state = await platform.getZoneState();
+    final wasInZone = state['wasInZone'] == true;
     final isInZone = result.isInZone;
 
     await _publishResult(result, service);
 
-    if (isInZone && !wasInZone) {
+    if (isInZone && !wasInZone && _inTapOutCooldown(result, config, state)) {
+      debugPrint('AttendanceTracker: In zone again right after a tap-out; waiting for the cool-down.');
+    } else if (isInZone && !wasInZone) {
       // ENTERING: Reset fail counter and mark as in-zone
-      await prefs.setInt(_failCountKey, 0);
-      await prefs.setBool(_wasInZoneKey, true);
+      await platform.setZoneState(wasInZone: true, failCount: 0);
       await _recordEvent(AttendanceEventType.enter, result, service);
 
       final sourceLabel = const {
@@ -540,19 +541,17 @@ class BackgroundExecutor {
       );
     } else if (isInZone && wasInZone) {
       // STILL IN ZONE: Reset fail counter (healthy scan)
-      await prefs.setInt(_failCountKey, 0);
+      if (state['failCount'] != 0) await platform.setZoneState(wasInZone: true, failCount: 0);
     } else if (!isInZone && wasInZone) {
       // POTENTIALLY LEAVING: Apply debounce — require multiple consecutive fails
       final threshold = config.exitDebounceCount.clamp(1, 10);
-      int failCount = (prefs.getInt(_failCountKey) ?? 0) + 1;
-      await prefs.setInt(_failCountKey, failCount);
+      final failCount = ((state['failCount'] as num?)?.toInt() ?? 0) + 1;
 
       debugPrint('AttendanceTracker: Out-of-zone fail count: $failCount / $threshold');
 
       if (failCount >= threshold) {
         // Confirmed exit after multiple consecutive fails
-        await prefs.setBool(_wasInZoneKey, false);
-        await prefs.setInt(_failCountKey, 0);
+        await platform.setZoneState(wasInZone: false, failCount: 0);
         await _recordEvent(AttendanceEventType.exit, result, service);
         _showNotification(
           config.outOfZoneTitle,
@@ -564,6 +563,7 @@ class BackgroundExecutor {
           enableTts: config.enableTts,
         );
       } else {
+        await platform.setZoneState(wasInZone: true, failCount: failCount);
         debugPrint('AttendanceTracker: Debouncing exit ($failCount/$threshold). Not yet confirmed.');
       }
     }
@@ -576,16 +576,24 @@ class BackgroundExecutor {
     }
   }
 
+  /// After a tap-out, only another tap/scan may check the user back in for
+  /// [AttendanceConfig.tapOutCooldownMinutes].
+  static bool _inTapOutCooldown(DetectionResult result, AttendanceConfig config, Map<dynamic, dynamic> state) {
+    final tapOutAt = (state['tapOutAt'] as num?)?.toInt();
+    if (tapOutAt == null || result.byNfc || result.byQr) return false;
+    final since = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(tapOutAt));
+    return since < Duration(minutes: config.tapOutCooldownMinutes);
+  }
+
   static Future<void> _handleShiftEnded(
     AttendanceConfig config,
-    SharedPreferences prefs,
     DetectionResult result,
     ServiceInstance service,
   ) async {
-    final wasInZone = prefs.getBool(_wasInZoneKey) ?? false;
+    final platform = AttendanceTrackerPlatform.instance;
+    final wasInZone = (await platform.getZoneState())['wasInZone'] == true;
     if (wasInZone) {
-      await prefs.setBool(_wasInZoneKey, false);
-      await prefs.setInt(_failCountKey, 0);
+      await platform.setZoneState(wasInZone: false, failCount: 0);
       await _recordEvent(AttendanceEventType.shiftEnded, result, service);
       _showNotification(
         config.shiftEndedTitle,

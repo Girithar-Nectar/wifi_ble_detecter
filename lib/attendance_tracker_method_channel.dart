@@ -96,6 +96,21 @@ class MethodChannelAttendanceTracker extends AttendanceTrackerPlatform {
   }
 
   @override
+  Future<Map<dynamic, dynamic>> getZoneState() async {
+    return await methodChannel.invokeMethod<Map<dynamic, dynamic>>('getZoneState') ?? const {};
+  }
+
+  @override
+  Future<void> setZoneState({required bool wasInZone, required int failCount}) async {
+    await methodChannel.invokeMethod<void>('setZoneState', {'wasInZone': wasInZone, 'failCount': failCount});
+  }
+
+  @override
+  Future<void> resetZoneState() async {
+    await methodChannel.invokeMethod<void>('resetZoneState');
+  }
+
+  @override
   Future<Map<dynamic, dynamic>?> getLastCheckpoint() async {
     return await methodChannel.invokeMethod<Map<dynamic, dynamic>>('getLastCheckpoint');
   }

@@ -75,6 +75,15 @@ public class AttendanceTrackerPlugin: NSObject, FlutterPlugin {
       result(nil)
     case "recordCheckpoint":
       engine.recordCheckpoint(args["checkpoint"] as? [String: Any] ?? [:]) { result($0) }
+    case "resetZoneState":
+      engine.resetZoneState()
+      result(nil)
+    case "getZoneState":
+      result(engine.zoneState())
+    case "setZoneState":
+      engine.store.wasInZone = (args["wasInZone"] as? Bool) ?? false
+      engine.store.failCount = (args["failCount"] as? Int) ?? 0
+      result(nil)
     case "getLastCheckpoint":
       result(engine.store.lastCheckpoint)
     case "takePendingCheckpoints":

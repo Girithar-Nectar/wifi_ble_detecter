@@ -91,10 +91,25 @@ abstract class AttendanceTrackerPlatform extends PlatformInterface {
     throw UnimplementedError('markEventsUploaded() has not been implemented.');
   }
 
-  /// Stores a verified checkpoint and records a checkpoint event. On iOS the
-  /// native engine also evaluates the zone and returns the detection result.
+  /// Stores a verified checkpoint and records a checkpoint event, or, with
+  /// `checkpointToggle` while in zone, records a tap-out exit. Returns
+  /// `{tapOut}`; iOS also evaluates the zone and returns the detection result.
   Future<Map<dynamic, dynamic>?> recordCheckpoint(Map<String, dynamic> checkpoint) {
     throw UnimplementedError('recordCheckpoint() has not been implemented.');
+  }
+
+  /// Native zone state shared by every engine: `{wasInZone, failCount, tapOutAt}`.
+  Future<Map<dynamic, dynamic>> getZoneState() {
+    throw UnimplementedError('getZoneState() has not been implemented.');
+  }
+
+  Future<void> setZoneState({required bool wasInZone, required int failCount}) {
+    throw UnimplementedError('setZoneState() has not been implemented.');
+  }
+
+  /// Forgets presence: out of zone, no fail count, no tap-out, no checkpoint.
+  Future<void> resetZoneState() {
+    throw UnimplementedError('resetZoneState() has not been implemented.');
   }
 
   Future<Map<dynamic, dynamic>?> getLastCheckpoint() {

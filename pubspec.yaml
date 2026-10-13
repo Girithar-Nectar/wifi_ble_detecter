@@ -15,7 +15,7 @@ dependencies:
   geolocator: ^14.0.2
   network_info_plus: ^7.0.0
   flutter_blue_plus: ^2.1.0
-  flutter_local_notifications: ^20.0.0
+  flutter_local_notifications: ^22.3.2
   shared_preferences: ^2.5.4
   intl: ^0.20.2
   logger: ^2.6.2

@@ -139,7 +139,26 @@ class AttendanceTrackerPlugin :
             "setTrackingEnabled" -> {
                 val enabled = call.argument<Boolean>("enabled") ?: false
                 NativeStore.setTrackingEnabled(context, enabled)
-                if (enabled) GeofenceManager.register(context) else GeofenceManager.unregister(context)
+                if (enabled) {
+                    GeofenceManager.register(context)
+                } else {
+                    GeofenceManager.unregister(context)
+                    // Next start re-detects presence and emits a fresh enter.
+                    NativeStore.resetZoneState(context)
+                }
+                result.success(null)
+            }
+            "getZoneState" -> result.success(NativeStore.getZoneState(context))
+            "resetZoneState" -> {
+                NativeStore.resetZoneState(context)
+                result.success(null)
+            }
+            "setZoneState" -> {
+                NativeStore.setZoneState(
+                    context,
+                    call.argument<Boolean>("wasInZone") ?: false,
+                    call.argument<Int>("failCount") ?: 0,
+                )
                 result.success(null)
             }
             "isTrackingEnabled" -> result.success(NativeStore.isTrackingEnabled(context))
@@ -168,8 +187,7 @@ class AttendanceTrackerPlugin :
                 result.success(null)
             }
             "recordCheckpoint" -> {
-                recordCheckpoint(Json.toJson(call.argument<Map<*, *>>("checkpoint") ?: emptyMap<String, Any?>()))
-                result.success(null)
+                result.success(recordCheckpoint(Json.toJson(call.argument<Map<*, *>>("checkpoint") ?: emptyMap<String, Any?>())))
             }
             "getLastCheckpoint" -> result.success(NativeStore.getLastCheckpoint(context)?.let(Json::toMap))
             "takePendingCheckpoints" -> result.success(NativeStore.takePendingCheckpoints(context).map(Json::toMap))
@@ -198,24 +216,36 @@ class AttendanceTrackerPlugin :
 
     private fun nfc(): NfcReader = nfcReader ?: NfcReader(context).also { nfcReader = it }
 
-    /** Stores the verified checkpoint and logs it as an event; the Dart service evaluates the zone. */
-    private fun recordCheckpoint(checkpoint: JSONObject) {
+    /**
+     * Stores the verified checkpoint and logs it as an event; the Dart service
+     * evaluates the zone. With checkpointToggle, a tap while in zone is a
+     * tap-out: the exit is recorded here at once.
+     */
+    private fun recordCheckpoint(checkpoint: JSONObject): Map<String, Any?> {
         val timestamp = checkpoint.optLong("timestamp", System.currentTimeMillis())
         checkpoint.put("timestamp", timestamp)
-        NativeStore.setLastCheckpoint(context, checkpoint)
         val source = checkpoint.optString("source")
-        NativeStore.appendEvent(
-            context,
-            JSONObject()
-                .put("id", "${timestamp * 1000}-checkpoint")
-                .put("type", "checkpoint")
-                .put("source", source)
-                .put("trigger", source)
-                .put("appState", appState())
-                .put("timestamp", timestamp)
-                .put("checkpointId", checkpoint.opt("checkpointId"))
-                .put("uploaded", false)
-        )
+        val toggle = NativeStore.getConfig(context)?.optBoolean("checkpointToggle", false) == true
+        val tapOut = toggle && NativeStore.getZoneState(context)["wasInZone"] == true
+
+        if (tapOut) {
+            NativeStore.tapOut(context, timestamp)
+        } else {
+            NativeStore.setLastCheckpoint(context, checkpoint)
+        }
+        val type = if (tapOut) "exit" else "checkpoint"
+        val event = JSONObject()
+            .put("id", "${timestamp * 1000}-$type")
+            .put("type", type)
+            .put("source", source)
+            .put("trigger", source)
+            .put("appState", appState())
+            .put("timestamp", timestamp)
+            .put("checkpointId", checkpoint.opt("checkpointId"))
+            .put("uploaded", false)
+        NativeStore.appendEvent(context, event)
+        broadcast("onEvent", Json.toMap(event))
+        return mapOf("tapOut" to tapOut)
     }
 
     private fun isIgnoringBatteryOptimizations(): Boolean {

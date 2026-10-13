@@ -198,6 +198,29 @@ void main() {
       expect(config.qrSiteId, 'HQ');
       expect(config.hasQr, isTrue);
       expect(config.iosContinuousTracking, isTrue);
+      expect(config.checkpointToggle, isFalse);
+    });
+
+    test('tap-out settings round trip; passive sensors exclude NFC/QR', () {
+      final config = AttendanceConfig.fromJson(
+        AttendanceConfig(
+          officePoints: const [],
+          nfcTags: const ['A'],
+          qrCodes: const ['B'],
+          checkpointToggle: true,
+          tapOutCooldownMinutes: 2,
+          shiftStartMs: 0,
+          shiftEndMs: 86399000,
+        ).toJson(),
+      );
+      expect(config.checkpointToggle, isTrue);
+      expect(config.tapOutCooldownMinutes, 2);
+      expect(config.hasPassiveSensors, isFalse);
+      expect(
+        AttendanceConfig(officePoints: const [], wifiBSSIDs: const ['x'], shiftStartMs: 0, shiftEndMs: 1)
+            .hasPassiveSensors,
+        isTrue,
+      );
     });
   });
 }

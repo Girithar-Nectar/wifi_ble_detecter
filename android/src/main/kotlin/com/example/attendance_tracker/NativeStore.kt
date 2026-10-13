@@ -17,6 +17,9 @@ internal object NativeStore {
     private const val KEY_LAST_CHECKPOINT = "last_checkpoint"
     private const val KEY_PENDING = "pending_checkpoints"
     private const val KEY_LAST_RESULT = "last_result"
+    private const val KEY_WAS_IN_ZONE = "was_in_zone"
+    private const val KEY_FAIL_COUNT = "fail_count"
+    private const val KEY_TAP_OUT_AT = "tap_out_at"
     private const val MAX_EVENTS = 500
     private const val MAX_PENDING = 20
 
@@ -60,6 +63,43 @@ internal object NativeStore {
     @Synchronized
     fun markEventsUploaded(context: Context, ids: Set<String>) {
         updateEvents(context, ids) { it.put("uploaded", true) }
+    }
+
+    /** Confirmed zone state behind enter/exit events, shared by the UI and service engines. */
+    @Synchronized
+    fun getZoneState(context: Context): Map<String, Any?> {
+        val prefs = prefs(context)
+        return mapOf(
+            "wasInZone" to prefs.getBoolean(KEY_WAS_IN_ZONE, false),
+            "failCount" to prefs.getInt(KEY_FAIL_COUNT, 0),
+            "tapOutAt" to if (prefs.contains(KEY_TAP_OUT_AT)) prefs.getLong(KEY_TAP_OUT_AT, 0) else null,
+        )
+    }
+
+    @Synchronized
+    fun setZoneState(context: Context, wasInZone: Boolean, failCount: Int) {
+        prefs(context).edit().putBoolean(KEY_WAS_IN_ZONE, wasInZone).putInt(KEY_FAIL_COUNT, failCount).apply()
+    }
+
+    /** NFC/QR tap-out: out of zone now, checkpoint presence ended. */
+    @Synchronized
+    fun tapOut(context: Context, at: Long) {
+        prefs(context).edit()
+            .putBoolean(KEY_WAS_IN_ZONE, false)
+            .putInt(KEY_FAIL_COUNT, 0)
+            .putLong(KEY_TAP_OUT_AT, at)
+            .remove(KEY_LAST_CHECKPOINT)
+            .apply()
+    }
+
+    @Synchronized
+    fun resetZoneState(context: Context) {
+        prefs(context).edit()
+            .remove(KEY_WAS_IN_ZONE)
+            .remove(KEY_FAIL_COUNT)
+            .remove(KEY_TAP_OUT_AT)
+            .remove(KEY_LAST_CHECKPOINT)
+            .apply()
     }
 
     @Synchronized

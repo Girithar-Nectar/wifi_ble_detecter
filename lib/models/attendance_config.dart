@@ -52,6 +52,14 @@ class AttendanceConfig {
   /// sensor matches. 0 keeps it until the current shift ends.
   final int checkpointValidityMinutes;
 
+  /// When true, an NFC tap or QR scan while the user is already in the zone
+  /// checks them out (tap in at the entrance, tap out when leaving).
+  final bool checkpointToggle;
+
+  /// After a tap-out, Wi-Fi/BLE/GPS/iBeacon matches do not check the user back
+  /// in for this many minutes (they may still be in range while walking out).
+  final int tapOutCooldownMinutes;
+
   /// iOS only: keep a low-power location session running during the shift so
   /// periodic scans continue while the app is in the background.
   final bool iosContinuousTracking;
@@ -115,6 +123,8 @@ class AttendanceConfig {
     this.qrStepSeconds = 30,
     this.qrDriftSteps = 1,
     this.checkpointValidityMinutes = 60,
+    this.checkpointToggle = false,
+    this.tapOutCooldownMinutes = 5,
     this.iosContinuousTracking = true,
     required this.shiftStartMs,
     required this.shiftEndMs,
@@ -140,6 +150,10 @@ class AttendanceConfig {
   bool get hasBeacons => iBeacons.isNotEmpty;
   bool get hasNfc => nfcTags.isNotEmpty;
   bool get hasQr => qrCodes.isNotEmpty || (qrSecret != null && qrSecret!.isNotEmpty);
+  bool get hasGps => officePoints.isNotEmpty;
+
+  /// Whether anything is sensed without the user acting (everything except NFC/QR).
+  bool get hasPassiveSensors => hasGps || hasWifi || hasBle || hasBeacons;
 
   Map<String, dynamic> toJson() {
     return {
@@ -158,6 +172,8 @@ class AttendanceConfig {
       'qrStepSeconds': qrStepSeconds,
       'qrDriftSteps': qrDriftSteps,
       'checkpointValidityMinutes': checkpointValidityMinutes,
+      'checkpointToggle': checkpointToggle,
+      'tapOutCooldownMinutes': tapOutCooldownMinutes,
       'iosContinuousTracking': iosContinuousTracking,
       'shiftStartMs': shiftStartMs,
       'shiftEndMs': shiftEndMs,
@@ -196,6 +212,8 @@ class AttendanceConfig {
       qrStepSeconds: (json['qrStepSeconds'] as num?)?.toInt() ?? 30,
       qrDriftSteps: (json['qrDriftSteps'] as num?)?.toInt() ?? 1,
       checkpointValidityMinutes: (json['checkpointValidityMinutes'] as num?)?.toInt() ?? 60,
+      checkpointToggle: json['checkpointToggle'] ?? false,
+      tapOutCooldownMinutes: (json['tapOutCooldownMinutes'] as num?)?.toInt() ?? 5,
       iosContinuousTracking: json['iosContinuousTracking'] ?? true,
       shiftStartMs: (json['shiftStartMs'] as num?)?.toInt() ?? 0,
       shiftEndMs: (json['shiftEndMs'] as num?)?.toInt() ?? 86399000,

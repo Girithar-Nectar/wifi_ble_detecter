@@ -36,12 +36,16 @@ class CheckpointResult {
   final String? tagUid;
   final List<String> tagPayloads;
 
+  /// With [AttendanceConfig.checkpointToggle], this tap/scan checked the user out.
+  final bool isTapOut;
+
   const CheckpointResult({
     required this.source,
     required this.verification,
     this.detection,
     this.tagUid,
     this.tagPayloads = const [],
+    this.isTapOut = false,
   });
 
   bool get isValid => verification.isValid;
@@ -327,6 +331,17 @@ class AttendanceTracker {
     }
   }
 
+  /// The Wi-Fi network the phone is connected to now, e.g. to register a site's
+  /// BSSID. Needs location permission (and the Access WiFi Information
+  /// entitlement on iOS); fields are null when unavailable.
+  Future<({String? ssid, String? bssid})> getConnectedWifi() async {
+    final info = NetworkInfo();
+    var bssid = await info.getWifiBSSID();
+    if (bssid == '02:00:00:00:00:00') bssid = null;
+    final ssid = (await info.getWifiName())?.replaceAll('"', '');
+    return (ssid: ssid == null || ssid.isEmpty ? null : ssid, bssid: bssid);
+  }
+
   /// Open Wi-Fi settings.
   Future<void> openWifiSettings() async {
     try {
@@ -437,6 +452,24 @@ class AttendanceTracker {
     return result?.isInZone ?? false;
   }
 
+  /// Forgets the current presence (and any NFC/QR checkpoint), e.g. after the
+  /// user is assigned to another zone, so the next scan that detects them
+  /// records a fresh enter. Call [initialize] with the new config first.
+  Future<void> resetPresence() async {
+    await _platform.resetZoneState();
+    if (await isTracking()) await forceScan();
+  }
+
+  /// The confirmed zone state behind enter/exit events (debounced, unlike
+  /// [isInZone], which reflects the last single scan).
+  Future<bool> isPresent() async {
+    try {
+      return (await _platform.getZoneState())['wasInZone'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Events not yet acknowledged, oldest first — including ones recorded while
   /// the app was in the background or killed. Sync them to your server, then
   /// call [acknowledgeEvents].
@@ -538,22 +571,24 @@ class AttendanceTracker {
 
     _ensureNativeHandler();
     final native = await CheckpointService.record(source, verification.checkpointId!);
+    final tapOut = native?['tapOut'] == true;
     DetectionResult detection;
-    if (native != null) {
+    if (native != null && native.containsKey('isInZone')) {
       // iOS evaluated the zone natively (and already emitted onDetection).
       detection = DetectionResult.fromJson(native);
     } else {
       final last = await getLastResult();
       final config = await _requireConfig();
+      final label = '${source.toUpperCase()} "${verification.checkpointId}"';
       detection = DetectionResult(
-        isInZone: config.isWithinShift(DateTime.now()),
-        byNfc: source == CheckpointSource.nfc,
-        byQr: source == CheckpointSource.qr,
+        isInZone: !tapOut && config.isWithinShift(DateTime.now()),
+        byNfc: !tapOut && source == CheckpointSource.nfc,
+        byQr: !tapOut && source == CheckpointSource.qr,
         checkpointId: verification.checkpointId,
         status: last?.status ?? ServiceStatus(isGpsEnabled: false, isWifiEnabled: false, isBleEnabled: false),
         trigger: source,
         timestamp: DateTime.now(),
-        diagnosticLog: 'CHECKPOINT: ${source.toUpperCase()} "${verification.checkpointId}" verified.\n',
+        diagnosticLog: tapOut ? 'CHECKPOINT: $label tapped again: checked out.\n' : 'CHECKPOINT: $label verified.\n',
       );
       _results.add(detection);
       await BackgroundExecutor.notifyCheckpoint(source);
@@ -564,6 +599,7 @@ class AttendanceTracker {
       detection: detection,
       tagUid: tagUid,
       tagPayloads: tagPayloads,
+      isTapOut: tapOut,
     );
   }
 

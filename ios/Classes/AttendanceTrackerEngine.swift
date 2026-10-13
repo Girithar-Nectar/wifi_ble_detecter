@@ -117,6 +117,8 @@ public final class AttendanceTrackerEngine: NSObject, CLLocationManagerDelegate 
       startMonitoring(forceRegions: true, initialScan: true)
     } else {
       stopMonitoring()
+      // Next start re-detects presence and emits a fresh enter.
+      resetZoneState()
     }
   }
 
@@ -129,9 +131,16 @@ public final class AttendanceTrackerEngine: NSObject, CLLocationManagerDelegate 
     let now = Date()
     var cp = checkpoint
     if cp["timestamp"] == nil { cp["timestamp"] = Self.ms(now) }
-    store.lastCheckpoint = cp
     let source = (cp["source"] as? String) == "nfc" ? "nfc" : "qr"
     let checkpointId = cp["checkpointId"] ?? NSNull()
+
+    // checkpointToggle: a tap while in zone is a tap-out.
+    if config?.checkpointToggle == true && store.wasInZone {
+      tapOut(source: source, checkpointId: checkpointId, at: now, completion: completion)
+      return
+    }
+
+    store.lastCheckpoint = cp
     _ = recordEvent("checkpoint", result: ["trigger": source, "checkpointId": checkpointId, flag(for: source): true])
 
     guard let config = config else {
@@ -156,12 +165,49 @@ public final class AttendanceTrackerEngine: NSObject, CLLocationManagerDelegate 
     ]
     if valid { applyTransition(inZone: true, result: result, config: config, exitHint: false) }
     result["appState"] = appState()
+    result["tapOut"] = false
     store.lastResult = result
     AttendanceTrackerPlugin.broadcast("onDetection", result)
     completion(result)
     uploadPendingEvents {}
     // Refresh the passive sensors too.
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.scan(trigger: source) }
+  }
+
+  private func tapOut(source: String, checkpointId: Any, at now: Date, completion: @escaping ([String: Any]) -> Void) {
+    store.lastCheckpoint = nil
+    store.wasInZone = false
+    store.failCount = 0
+    store.tapOutAt = Self.ms(now)
+    _ = recordEvent("exit", result: ["trigger": source, "checkpointId": checkpointId, flag(for: source): true])
+    let defaultStatus: [String: Any] = ["isGpsEnabled": false, "isWifiEnabled": false, "isBleEnabled": false]
+    let result: [String: Any] = [
+      "isInZone": false, "tapOut": true,
+      "byGps": false, "byWifi": false, "byBle": false, "byBeacon": false, "byNfc": false, "byQr": false,
+      "checkpointId": checkpointId,
+      "trigger": source,
+      "timestamp": Self.ms(now),
+      "appState": appState(),
+      "status": (store.lastResult?["status"] as? [String: Any]) ?? defaultStatus,
+      "diagnosticLog": "CHECKPOINT: \(source.uppercased()) \"\(checkpointId)\" tapped again: checked out.\n",
+    ]
+    store.lastResult = result
+    AttendanceTrackerPlugin.broadcast("onDetection", result)
+    completion(result)
+    uploadPendingEvents {}
+  }
+
+  func resetZoneState() {
+    store.wasInZone = false
+    store.failCount = 0
+    store.tapOutAt = nil
+    store.lastCheckpoint = nil
+  }
+
+  func zoneState() -> [String: Any] {
+    var state: [String: Any] = ["wasInZone": store.wasInZone, "failCount": store.failCount]
+    if let tapOutAt = store.tapOutAt { state["tapOutAt"] = tapOutAt }
+    return state
   }
 
   /// `attendancetracker://checkpoint?...` opened the app; Dart verifies it.
@@ -668,7 +714,13 @@ public final class AttendanceTrackerEngine: NSObject, CLLocationManagerDelegate 
   /// [exitDebounceCount] misses (or one miss confirmed by a region exit).
   private func applyTransition(inZone: Bool, result: [String: Any], config: TrackerConfig, exitHint: Bool) {
     let wasInZone = store.wasInZone
-    if inZone && !wasInZone {
+    let byCheckpoint = (result["byNfc"] as? Bool) == true || (result["byQr"] as? Bool) == true
+    if inZone && !wasInZone && !byCheckpoint, let tapOutAt = store.tapOutAt,
+      Self.ms(Date()) - tapOutAt < Double(config.tapOutCooldownMinutes) * 60_000
+    {
+      // Just tapped out; sensors may still see the user walking away.
+      log("In zone again right after a tap-out; waiting for the cool-down")
+    } else if inZone && !wasInZone {
       store.wasInZone = true
       store.failCount = 0
       _ = recordEvent("enter", result: result)
@@ -704,7 +756,10 @@ public final class AttendanceTrackerEngine: NSObject, CLLocationManagerDelegate 
       "timestamp": Self.ms(now),
       "uploaded": false,
     ]
-    if type == "enter" || type == "checkpoint", let source = Self.source(of: result) { event["source"] = source }
+    // Exits carry a source only when they come from an NFC/QR tap-out.
+    if type == "enter" || type == "checkpoint" || type == "exit", let source = Self.source(of: result) {
+      event["source"] = source
+    }
     for key in ["trigger", "checkpointId", "latitude", "longitude", "accuracy", "wifiBssid", "wifiSsid", "bleDevice", "beacon"] {
       if let value = result[key], !(value is NSNull) { event[key] = value }
     }

@@ -53,6 +53,12 @@ final class NativeStore {
     set { locked { defaults.set(newValue, forKey: key("fail_count")) } }
   }
 
+  /// When the user last checked out with an NFC/QR tap (ms since epoch).
+  var tapOutAt: Double? {
+    get { locked { defaults.object(forKey: key("tap_out_at")) as? Double } }
+    set { locked { defaults.set(newValue, forKey: key("tap_out_at")) } }
+  }
+
   var regionSignature: String? {
     get { locked { defaults.string(forKey: key("region_signature")) } }
     set { locked { defaults.set(newValue, forKey: key("region_signature")) } }

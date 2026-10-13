@@ -58,6 +58,8 @@ struct TrackerConfig {
   let bleServiceUuids: [String]
   let beacons: [BeaconSpec]
   let checkpointValidityMinutes: Int
+  let checkpointToggle: Bool
+  let tapOutCooldownMinutes: Int
   let continuousTracking: Bool
   let shiftStartMs: Int
   let shiftEndMs: Int
@@ -88,6 +90,8 @@ struct TrackerConfig {
     bleServiceUuids = strings("bleServiceUuids")
     beacons = strings("iBeacons").compactMap(BeaconSpec.init)
     checkpointValidityMinutes = int("checkpointValidityMinutes", 60)
+    checkpointToggle = (json["checkpointToggle"] as? NSNumber)?.boolValue ?? false
+    tapOutCooldownMinutes = int("tapOutCooldownMinutes", 5)
     continuousTracking = (json["iosContinuousTracking"] as? NSNumber)?.boolValue ?? true
     shiftStartMs = int("shiftStartMs", 0)
     shiftEndMs = int("shiftEndMs", 86_399_000)
