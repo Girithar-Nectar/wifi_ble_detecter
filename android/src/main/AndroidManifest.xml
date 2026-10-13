@@ -3,6 +3,50 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <!-- Required for Android 13+ to scan for nearby Wi-Fi devices -->
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" 
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
                      android:usesPermissionFlags="neverForLocation" />
+    <!-- NFC checkpoints. NFC hardware stays optional so the app installs everywhere. -->
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-feature android:name="android.hardware.nfc" android:required="false" />
+    <!-- Re-register geofences after a reboot or an app update. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application>
+        <!-- Geofence transitions; can restart tracking after the app was killed. -->
+        <receiver
+            android:name=".GeofenceReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".RestartReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Opens from an NFC tag or a camera-scanned QR code holding
+             attendancetracker://checkpoint?id=..., even when the app is killed. -->
+        <activity
+            android:name=".CheckpointActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="attendancetracker" android:host="checkpoint" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="attendancetracker" android:host="checkpoint" />
+            </intent-filter>
+        </activity>
+    </application>
 </manifest>

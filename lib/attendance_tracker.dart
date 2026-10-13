@@ -1,22 +1,89 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show Platform;
+import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:geolocator/geolocator.dart' hide ServiceStatus;
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:permission_handler/permission_handler.dart' hide ServiceStatus;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'services/background_executor.dart';
+import 'services/checkpoint_service.dart';
+import 'services/checkpoint_verifier.dart';
 import 'services/detection_fusion.dart';
 import 'models/attendance_config.dart';
+import 'models/attendance_event.dart';
 import 'attendance_tracker_platform_interface.dart';
 
 export 'models/attendance_config.dart';
+export 'models/attendance_event.dart';
 export 'services/detection_fusion.dart';
+export 'services/checkpoint_verifier.dart';
+export 'services/checkpoint_service.dart' show CheckpointOutcome;
+
+/// Outcome of an NFC tap or QR scan.
+class CheckpointResult {
+  /// [CheckpointSource.nfc] or [CheckpointSource.qr].
+  final String source;
+  final CheckpointVerification verification;
+
+  /// The zone state after the checkpoint was applied (null when invalid).
+  final DetectionResult? detection;
+
+  /// NFC only: the tag UID and its NDEF text/URI records, useful when
+  /// registering a new tag.
+  final String? tagUid;
+  final List<String> tagPayloads;
+
+  const CheckpointResult({
+    required this.source,
+    required this.verification,
+    this.detection,
+    this.tagUid,
+    this.tagPayloads = const [],
+  });
+
+  bool get isValid => verification.isValid;
+}
+
+/// What the device still needs for attendance to keep working while the app
+/// is in the background or killed.
+class TrackingReadiness {
+  /// "Always" / "Allow all the time" location. Required for geofences and for
+  /// iOS to relaunch a killed app.
+  final bool backgroundLocation;
+  final bool notifications;
+
+  /// Android: the app is exempt from battery optimisation, so the system lets
+  /// it restart its foreground service after a kill. Always true on iOS.
+  final bool ignoringBatteryOptimizations;
+  final bool nfcAvailable;
+
+  const TrackingReadiness({
+    required this.backgroundLocation,
+    required this.notifications,
+    required this.ignoringBatteryOptimizations,
+    required this.nfcAvailable,
+  });
+
+  bool get isReadyForBackground => backgroundLocation && notifications && ignoringBatteryOptimizations;
+}
 
 class AttendanceTracker {
   static final AttendanceTracker _instance = AttendanceTracker._internal();
   factory AttendanceTracker() => _instance;
   AttendanceTracker._internal();
+
+  AttendanceConfig? _config;
+  bool _nativeHandlerSet = false;
+  final List<StreamSubscription> _serviceSubscriptions = [];
+
+  late final StreamController<DetectionResult> _results = StreamController.broadcast(onListen: _listenToService);
+  late final StreamController<AttendanceEvent> _events = StreamController.broadcast(onListen: _listenToService);
+  late final StreamController<Map<String, dynamic>> _pings = StreamController.broadcast(onListen: _listenToService);
+
+  AttendanceTrackerPlatform get _platform => AttendanceTrackerPlatform.instance;
 
   /// Check if all critical permissions (Location, Bluetooth) are granted.
   Future<bool> hasPermissions() async {
@@ -42,7 +109,7 @@ class AttendanceTracker {
       if (!isIOS && sdkInt >= 31) {
         hasBle = await Permission.bluetoothScan.isGranted && await Permission.bluetoothConnect.isGranted;
       } else if (isIOS) {
-        // On iOS, Bluetooth permission is handled by flutter_blue_plus automatically
+        // On iOS, Bluetooth permission is handled by CoreBluetooth automatically
         hasBle = true;
       }
 
@@ -113,6 +180,16 @@ class AttendanceTracker {
 
       print('AttendanceTracker: Batch request finished: $statuses');
 
+      // 1b. Android: "Allow all the time" is a separate step (a Settings page on
+      // Android 11+). Geofences and restarts after a kill need it.
+      if (!isIOS && (statuses[Permission.location]?.isGranted ?? false)) {
+        if (!await Permission.locationAlways.isGranted) {
+          print('AttendanceTracker: Requesting Android background location...');
+          final always = await Permission.locationAlways.request();
+          print('AttendanceTracker: Android background location result: $always');
+        }
+      }
+
       // 2. Wait for system UI to settle completely
       print('AttendanceTracker: Waiting for UI to settle...');
       await Future.delayed(const Duration(milliseconds: 1500));
@@ -163,6 +240,40 @@ class AttendanceTracker {
     } catch (e, stack) {
       print('AttendanceTracker: FATAL error requesting permissions: $e');
       print('AttendanceTracker: Stack trace: $stack');
+      return false;
+    }
+  }
+
+  /// Reports what is still missing for background and killed-state tracking.
+  Future<TrackingReadiness> getReadiness() async {
+    final locStatus = await Geolocator.checkPermission();
+    return TrackingReadiness(
+      backgroundLocation: locStatus == LocationPermission.always,
+      notifications: await Permission.notification.isGranted,
+      ignoringBatteryOptimizations: await isIgnoringBatteryOptimizations(),
+      nfcAvailable: await isNfcAvailable(),
+    );
+  }
+
+  /// Android: whether the app is exempt from battery optimisation. Always true on iOS.
+  Future<bool> isIgnoringBatteryOptimizations() async {
+    if (Platform.isIOS) return true;
+    try {
+      return await _platform.isIgnoringBatteryOptimizations();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Android: asks the user to exempt the app from battery optimisation, which
+  /// lets the system restart tracking after the app is swiped away. Opens the
+  /// direct prompt when the host app declares
+  /// REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, otherwise the settings list.
+  Future<bool> requestIgnoreBatteryOptimizations() async {
+    if (Platform.isIOS) return true;
+    try {
+      return await _platform.requestIgnoreBatteryOptimizations();
+    } catch (_) {
       return false;
     }
   }
@@ -247,65 +358,270 @@ class AttendanceTracker {
   }
 
   /// Initialize the plugin with the provided configuration.
+  ///
+  /// Call this on every app launch: it also verifies NFC taps and
+  /// `attendancetracker://` links that launched the app while it was killed.
   Future<void> initialize(AttendanceConfig config) async {
-    await BackgroundExecutor.initialize(config);
+    _config = config;
+    _ensureNativeHandler();
+    await _platform.configure(config.toJson());
+    if (Platform.isIOS) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(BackgroundExecutor.configKey, jsonEncode(config.toJson()));
+    } else {
+      await BackgroundExecutor.initialize(config);
+    }
+    await processPendingCheckpoints();
   }
 
   /// Start tracking attendance.
   Future<void> startTracking() async {
-    await BackgroundExecutor.start();
+    _ensureNativeHandler();
+    await _platform.setTrackingEnabled(true);
+    if (!Platform.isIOS) {
+      await BackgroundExecutor.start();
+    }
   }
 
   /// Stop tracking attendance.
   Future<void> stopTracking() async {
-    await BackgroundExecutor.stop();
+    await _platform.setTrackingEnabled(false);
+    if (!Platform.isIOS) {
+      await BackgroundExecutor.stop();
+    }
   }
+
+  Future<bool> isTracking() => _platform.isTrackingEnabled();
 
   /// Manually trigger a detection scan immediately.
   Future<void> forceScan() async {
-    await BackgroundExecutor.forceScan();
+    if (Platform.isIOS) {
+      _ensureNativeHandler();
+      await _platform.scanNow(DetectionTrigger.manual);
+    } else {
+      await BackgroundExecutor.forceScan();
+    }
   }
 
   /// A stream of detection results as they occur in the background.
-  Stream<DetectionResult> get onResult {
-    return FlutterBackgroundService().on('onUpdate').where((e) => e != null).map((event) {
-      return _mapToResult(event!);
-    });
-  }
+  Stream<DetectionResult> get onResult => _results.stream;
+
+  /// Enter, exit, checkpoint and shift-ended events as they are recorded.
+  /// Events recorded while the app was killed are in [getPendingEvents].
+  Stream<AttendanceEvent> get onEvent => _events.stream;
 
   /// A stream of 'ping' events from the background to verify it's alive.
-  Stream<Map<String, dynamic>> get onPing {
-    return FlutterBackgroundService().on('ping').where((e) => e != null).map((e) => e!);
-  }
+  Stream<Map<String, dynamic>> get onPing => _pings.stream;
 
   /// Manually trigger a test vibration notification.
   Future<void> testVibration() async {
-    FlutterBackgroundService().invoke('testVibration');
+    if (Platform.isIOS) {
+      await _platform.testNotification();
+    } else {
+      FlutterBackgroundService().invoke('testVibration');
+    }
   }
 
   /// Manually check the current status (In-Zone/Out-of-Zone).
   Future<DetectionResult?> getLastResult() async {
-    return await BackgroundExecutor.getLastResult();
+    try {
+      final map = await _platform.getLastResult();
+      return map != null ? DetectionResult.fromJson(map) : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<bool> isInZone() async {
-    final result = await BackgroundExecutor.getLastResult();
+    final result = await getLastResult();
     return result?.isInZone ?? false;
   }
 
-  DetectionResult _mapToResult(Map<String, dynamic> map) {
-    return DetectionResult(
-      isInZone: map['isInZone'] ?? false,
-      byGps: map['byGps'] ?? false,
-      byWifi: map['byWifi'] ?? false,
-      byBle: map['byBle'] ?? false,
-      distance: (map['distance'] as num?)?.toDouble(),
-      diagnosticLog: map['diagnosticLog'] ?? "",
-      status: ServiceStatus(
-        isGpsEnabled: map['status']?['isGpsEnabled'] ?? false,
-        isWifiEnabled: map['status']?['isWifiEnabled'] ?? false,
-        isBleEnabled: map['status']?['isBleEnabled'] ?? false,
-      ),
+  /// Events not yet acknowledged, oldest first — including ones recorded while
+  /// the app was in the background or killed. Sync them to your server, then
+  /// call [acknowledgeEvents].
+  Future<List<AttendanceEvent>> getPendingEvents() async {
+    final list = await _platform.getEvents(pendingOnly: true);
+    return list.map(AttendanceEvent.fromJson).toList();
+  }
+
+  Future<void> acknowledgeEvents(List<String> ids) => _platform.acknowledgeEvents(ids);
+
+  Future<bool> isNfcAvailable() async {
+    try {
+      return await _platform.isNfcAvailable();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Waits for the user to tap an NFC checkpoint tag, verifies it and records
+  /// attendance. Throws a [PlatformException] when NFC is unavailable, the
+  /// user cancels, or [timeout] passes (Android; iOS ends its sheet after 60s).
+  Future<CheckpointResult> scanNfc({
+    String alertMessage = 'Hold your phone near the attendance tag.',
+    Duration timeout = const Duration(seconds: 30),
+  }) async {
+    final config = await _requireConfig();
+    final tag = await _platform.readNfcTag(alertMessage: alertMessage, timeoutMs: timeout.inMilliseconds);
+    final uid = tag?['uid'] as String?;
+    final payloads = List<String>.from((tag?['payloads'] as List?) ?? const []);
+    final verification = CheckpointVerifier.verifyNfc(uid: uid, payloads: payloads, config: config);
+    return _commitCheckpoint(CheckpointSource.nfc, verification, tagUid: uid, tagPayloads: payloads);
+  }
+
+  /// Cancels a running [scanNfc].
+  Future<void> cancelNfcScan() => _platform.stopNfcSession();
+
+  /// Verifies a scanned QR value (from any scanner the host app uses) and
+  /// records attendance when it is a valid checkpoint.
+  Future<CheckpointResult> submitQrCode(String rawValue) async {
+    final config = await _requireConfig();
+    return _commitCheckpoint(CheckpointSource.qr, CheckpointVerifier.verifyQr(rawValue, config));
+  }
+
+  /// Handles a checkpoint link the host app received, e.g. a universal link
+  /// written on an NFC tag (iOS background tag reading) or scanned by the camera.
+  Future<CheckpointResult> handleCheckpointUri(Uri uri, {String source = CheckpointSource.qr}) async {
+    final config = await _requireConfig();
+    final verification = source == CheckpointSource.nfc
+        ? CheckpointVerifier.verifyNfc(payloads: [uri.toString()], config: config)
+        : CheckpointVerifier.verifyQr(uri.toString(), config);
+    return _commitCheckpoint(source, verification);
+  }
+
+  /// Verifies NFC taps and `attendancetracker://` links captured natively while
+  /// Dart was not running. Called by [initialize]; call it again on app resume.
+  Future<List<CheckpointOutcome>> processPendingCheckpoints() async {
+    final config = await _loadConfig();
+    if (config == null) return const [];
+    final outcomes = await CheckpointService.processPending(config);
+    final valid = outcomes.where((o) => o.verification.isValid).toList();
+    if (valid.isNotEmpty && !Platform.isIOS) {
+      await BackgroundExecutor.notifyCheckpoint(valid.last.source);
+    }
+    return outcomes;
+  }
+
+  /// The QR content a kiosk should display right now for rotating codes.
+  /// Regenerate it every [stepSeconds] (match [AttendanceConfig.qrStepSeconds]).
+  static String generateKioskQrCode({
+    required String secret,
+    required String siteId,
+    int stepSeconds = 30,
+    bool asUri = false,
+    DateTime? at,
+  }) {
+    return CheckpointVerifier.generateDynamicQr(
+      secret: secret,
+      siteId: siteId,
+      stepSeconds: stepSeconds,
+      asUri: asUri,
+      at: at,
     );
+  }
+
+  Future<CheckpointResult> _commitCheckpoint(
+    String source,
+    CheckpointVerification verification, {
+    String? tagUid,
+    List<String> tagPayloads = const [],
+  }) async {
+    if (!verification.isValid) {
+      return CheckpointResult(
+        source: source,
+        verification: verification,
+        tagUid: tagUid,
+        tagPayloads: tagPayloads,
+      );
+    }
+
+    _ensureNativeHandler();
+    final native = await CheckpointService.record(source, verification.checkpointId!);
+    DetectionResult detection;
+    if (native != null) {
+      // iOS evaluated the zone natively (and already emitted onDetection).
+      detection = DetectionResult.fromJson(native);
+    } else {
+      final last = await getLastResult();
+      final config = await _requireConfig();
+      detection = DetectionResult(
+        isInZone: config.isWithinShift(DateTime.now()),
+        byNfc: source == CheckpointSource.nfc,
+        byQr: source == CheckpointSource.qr,
+        checkpointId: verification.checkpointId,
+        status: last?.status ?? ServiceStatus(isGpsEnabled: false, isWifiEnabled: false, isBleEnabled: false),
+        trigger: source,
+        timestamp: DateTime.now(),
+        diagnosticLog: 'CHECKPOINT: ${source.toUpperCase()} "${verification.checkpointId}" verified.\n',
+      );
+      _results.add(detection);
+      await BackgroundExecutor.notifyCheckpoint(source);
+    }
+    return CheckpointResult(
+      source: source,
+      verification: verification,
+      detection: detection,
+      tagUid: tagUid,
+      tagPayloads: tagPayloads,
+    );
+  }
+
+  Future<AttendanceConfig> _requireConfig() async {
+    final config = await _loadConfig();
+    if (config == null) {
+      throw StateError('AttendanceTracker.initialize() must be called before using checkpoints.');
+    }
+    return config;
+  }
+
+  Future<AttendanceConfig?> _loadConfig() async {
+    if (_config != null) return _config;
+    final prefs = await SharedPreferences.getInstance();
+    final json = prefs.getString(BackgroundExecutor.configKey);
+    if (json == null) return null;
+    return _config = AttendanceConfig.fromJson(jsonDecode(json));
+  }
+
+  void _ensureNativeHandler() {
+    if (_nativeHandlerSet) return;
+    _nativeHandlerSet = true;
+    _platform.setNativeCallHandler(_onNativeCall);
+  }
+
+  Future<dynamic> _onNativeCall(MethodCall call) async {
+    final args = call.arguments;
+    switch (call.method) {
+      case 'onDetection':
+        if (args is Map) _results.add(DetectionResult.fromJson(args));
+        break;
+      case 'onEvent':
+        if (args is Map) _events.add(AttendanceEvent.fromJson(args));
+        break;
+      case 'onPing':
+        if (args is Map) _pings.add(Map<String, dynamic>.from(args));
+        break;
+      case 'onPendingCheckpoint':
+        await processPendingCheckpoints();
+        break;
+    }
+    return null;
+  }
+
+  /// Bridges flutter_background_service events (Android) into the public streams.
+  void _listenToService() {
+    _ensureNativeHandler();
+    if (Platform.isIOS || _serviceSubscriptions.isNotEmpty) return;
+    final service = FlutterBackgroundService();
+    _serviceSubscriptions
+      ..add(service.on('onUpdate').listen((e) {
+        if (e != null) _results.add(DetectionResult.fromJson(e));
+      }))
+      ..add(service.on('onEvent').listen((e) {
+        if (e != null) _events.add(AttendanceEvent.fromJson(e));
+      }))
+      ..add(service.on('ping').listen((e) {
+        if (e != null) _pings.add(e);
+      }));
   }
 }

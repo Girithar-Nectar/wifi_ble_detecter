@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:attendance_tracker/attendance_tracker.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -9,20 +10,30 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+/// Demo kiosk secret; a real app gets it from its backend.
+const _kioskSecret = 'demo-kiosk-secret';
+const _kioskSiteId = 'HQ';
+
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   final _tracker = AttendanceTracker();
   DetectionResult? _lastResult;
   StreamSubscription? _resultSubscription;
   StreamSubscription? _pingSubscription;
+  StreamSubscription? _eventSubscription;
   DateTime? _lastPing;
   Timer? _statusTimer;
   bool _isManualScanning = false;
   bool _isInitializing = true;
   ServiceStatus? _currentHardwareStatus;
+  TrackingReadiness? _readiness;
+  List<AttendanceEvent> _pendingEvents = [];
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+
+    _eventSubscription = _tracker.onEvent.listen((_) => _loadEvents());
 
     // Move heavy initialization to after the first frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -105,6 +116,13 @@ class _HomeScreenState extends State<HomeScreen> {
         'd0:5f:64:52:05:e1',
         'd0:5f:64:52:05:e2',
       ],
+      // Indoor checkpoints: an NFC tag holding "LOBBY-1" (or its UID), a printed
+      // QR "attendancetracker://checkpoint?id=LOBBY-1", or the rotating kiosk QR.
+      nfcTags: ['LOBBY-1'],
+      qrCodes: ['LOBBY-1'],
+      qrSecret: _kioskSecret,
+      qrSiteId: _kioskSiteId,
+      checkpointValidityMinutes: 60,
       shiftStartMs: 0, // 12:00 AM
       shiftEndMs: 86399000, // 11:59 PM (Full day for testing)
       welcomeTitle: 'Aloha!',
@@ -149,20 +167,81 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _resultSubscription?.cancel();
     _pingSubscription?.cancel();
+    _eventSubscription?.cancel();
     _statusTimer?.cancel();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && !_isInitializing) {
+      // NFC taps / checkpoint links that arrived while the app was in the background.
+      _tracker.processPendingCheckpoints().then((_) => _loadInitialStatus());
+    }
+  }
+
   Future<void> _loadInitialStatus() async {
     final result = await _tracker.getLastResult();
+    final readiness = await _tracker.getReadiness();
     if (mounted) {
       setState(() {
         _lastResult = result;
+        _readiness = readiness;
         if (result != null) _currentHardwareStatus = result.status;
       });
     }
+    await _loadEvents();
+  }
+
+  Future<void> _loadEvents() async {
+    final events = await _tracker.getPendingEvents();
+    if (mounted) setState(() => _pendingEvents = events);
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _scanNfc() async {
+    try {
+      final result = await _tracker.scanNfc();
+      _showMessage(result.isValid
+          ? 'Checked in at ${result.verification.checkpointId} (NFC)'
+          : '${result.verification.message} UID: ${result.tagUid ?? '-'}');
+    } on PlatformException catch (e) {
+      _showMessage(e.message ?? e.code);
+    }
+  }
+
+  Future<void> _enterQr() async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('QR code content'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(hintText: 'Paste what your scanner read'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.pop(context, controller.text), child: const Text('Submit')),
+        ],
+      ),
+    );
+    if (value == null || value.isEmpty) return;
+    final result = await _tracker.submitQrCode(value);
+    _showMessage(result.isValid ? 'Checked in at ${result.verification.checkpointId} (QR)' : result.verification.message);
+  }
+
+  Future<void> _showKioskCode() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => const _KioskCodeDialog(),
+    );
   }
 
   @override
@@ -215,6 +294,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 15),
                   _buildDiagnosticPanel(),
+                  const SizedBox(height: 15),
+                  _buildCheckpointPanel(),
+                  const SizedBox(height: 15),
+                  _buildBackgroundPanel(),
                   const SizedBox(height: 15),
                   _buildTestVibrationButton(),
                   const SizedBox(height: 25),
@@ -367,6 +450,8 @@ class _HomeScreenState extends State<HomeScreen> {
             _buildSensorStatus('GPS Signal', res.status.isGpsEnabled, res.byGps),
             _buildSensorStatus('Wi-Fi Match', res.status.isWifiEnabled, res.byWifi),
             _buildSensorStatus('Bluetooth Match', res.status.isBleEnabled, res.byBle),
+            _buildSensorStatus('iBeacon Match', res.status.isBleEnabled, res.byBeacon),
+            _buildSensorStatus('NFC / QR Checkpoint', true, res.byNfc || res.byQr),
             if (res.diagnosticLog.isNotEmpty) ...[
               const Divider(),
               const Align(
@@ -384,6 +469,86 @@ class _HomeScreenState extends State<HomeScreen> {
                     style: const TextStyle(fontFamily: 'monospace', fontSize: 10, color: Colors.blueGrey)),
               ),
             ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCheckpointPanel() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Indoor checkpoints', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(onPressed: _scanNfc, icon: const Icon(Icons.nfc), label: const Text('Tap NFC tag')),
+                OutlinedButton.icon(
+                    onPressed: _enterQr, icon: const Icon(Icons.qr_code_scanner), label: const Text('Enter QR')),
+                OutlinedButton.icon(
+                    onPressed: _showKioskCode, icon: const Icon(Icons.qr_code_2), label: const Text('Kiosk code')),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBackgroundPanel() {
+    final readiness = _readiness;
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Background & killed state', style: TextStyle(fontWeight: FontWeight.bold)),
+            if (readiness != null) ...[
+              _buildInfoRow('Location "Always"', readiness.backgroundLocation ? 'Yes' : 'No'),
+              _buildInfoRow('Notifications', readiness.notifications ? 'Yes' : 'No'),
+              _buildInfoRow('Battery optimisation off', readiness.ignoringBatteryOptimizations ? 'Yes' : 'No'),
+              _buildInfoRow('NFC available', readiness.nfcAvailable ? 'Yes' : 'No'),
+              if (!readiness.ignoringBatteryOptimizations)
+                TextButton(
+                  onPressed: () async {
+                    await _tracker.requestIgnoreBatteryOptimizations();
+                    _loadInitialStatus();
+                  },
+                  child: const Text('Allow running in background'),
+                ),
+            ],
+            const Divider(),
+            Row(
+              children: [
+                Text('Unsynced events: ${_pendingEvents.length}'),
+                const Spacer(),
+                if (_pendingEvents.isNotEmpty)
+                  TextButton(
+                    onPressed: () async {
+                      await _tracker.acknowledgeEvents(_pendingEvents.map((e) => e.id).toList());
+                      _loadEvents();
+                    },
+                    child: const Text('Mark synced'),
+                  ),
+              ],
+            ),
+            for (final event in _pendingEvents.reversed.take(5))
+              Text(
+                '${event.timestamp.toLocal().toString().substring(0, 19)}  ${event.type}'
+                ' ${event.source ?? ''} (${event.appState ?? '-'}, ${event.trigger ?? '-'})',
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+              ),
           ],
         ),
       ),
@@ -433,6 +598,57 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
         ],
       ),
+    );
+  }
+}
+
+/// What a kiosk at the entrance would render as a QR code. It changes every
+/// 30 seconds, so a photo of it stops working.
+class _KioskCodeDialog extends StatefulWidget {
+  const _KioskCodeDialog();
+
+  @override
+  State<_KioskCodeDialog> createState() => _KioskCodeDialogState();
+}
+
+class _KioskCodeDialogState extends State<_KioskCodeDialog> {
+  late Timer _timer;
+  String _code = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _refresh();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _refresh());
+  }
+
+  void _refresh() {
+    final code = AttendanceTracker.generateKioskQrCode(secret: _kioskSecret, siteId: _kioskSiteId, asUri: true);
+    if (code != _code) setState(() => _code = code);
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Kiosk QR content'),
+      content: SelectableText(_code, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+      actions: [
+        TextButton(
+          onPressed: () async {
+            final result = await AttendanceTracker().submitQrCode(_code);
+            if (context.mounted) Navigator.pop(context);
+            debugPrint('Kiosk self-test: ${result.verification.message}');
+          },
+          child: const Text('Submit as scan'),
+        ),
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+      ],
     );
   }
 }

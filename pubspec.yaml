@@ -1,6 +1,6 @@
 name: attendance_tracker
-description: "A new Flutter plugin project."
-version: 0.0.1
+description: "Attendance presence detection with GPS, Wi-Fi, BLE, iBeacon, NFC and QR checkpoints that keeps working in the background and after the app is killed on Android and iOS."
+version: 0.1.0
 homepage:
 
 environment:
@@ -22,6 +22,7 @@ dependencies:
   permission_handler: ^12.0.1
   flutter_tts: ^4.2.5
   vibration: ^3.1.1
+  crypto: ^3.0.6
 
 dev_dependencies:
   flutter_test:

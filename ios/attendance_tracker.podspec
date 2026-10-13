@@ -4,10 +4,11 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'attendance_tracker'
-  s.version          = '0.0.1'
-  s.summary          = 'A new Flutter plugin project.'
+  s.version          = '0.1.0'
+  s.summary          = 'Attendance presence detection that keeps working in the background and after a kill.'
   s.description      = <<-DESC
-A new Flutter plugin project.
+GPS, Wi-Fi, BLE, iBeacon, NFC and QR attendance detection. On iOS it runs natively on
+region, iBeacon, significant-change and visit wake-ups, so it works after the app is killed.
                        DESC
   s.homepage         = 'http://example.com'
   s.license          = { :file => '../LICENSE' }
@@ -16,6 +17,10 @@ A new Flutter plugin project.
   s.source_files = 'Classes/**/*'
   s.dependency 'Flutter'
   s.platform = :ios, '13.0'
+  s.frameworks = 'CoreLocation', 'CoreBluetooth', 'NetworkExtension', 'SystemConfiguration',
+                 'UserNotifications', 'AVFoundation'
+  # Weak, so the app still launches on devices without NFC support.
+  s.weak_frameworks = 'CoreNFC'
 
   # Flutter.framework does not contain a i386 slice.
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }

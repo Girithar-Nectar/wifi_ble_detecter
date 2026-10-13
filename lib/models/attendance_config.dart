@@ -17,10 +17,44 @@ class AttendanceConfig {
   final List<String> bleDeviceNames;
 
   /// List of BLE MAC Addresses (or Platform IDs) that confirm presence.
+  /// iOS never exposes MAC addresses, so on iOS use [bleDeviceNames] or [iBeacons].
   final List<String> bleMACs;
 
   /// List of BLE Service UUIDs to filter for (CRITICAL for iOS background scanning).
   final List<String> bleServiceUuids;
+
+  /// iBeacons that confirm presence, as "UUID", "UUID:major" or "UUID:major:minor".
+  /// On iOS these are monitored by CoreLocation, which relaunches a killed app
+  /// when the phone enters or leaves the beacon's range.
+  final List<String> iBeacons;
+
+  /// NFC checkpoints: tag UIDs (hex, separators ignored) or checkpoint ids written
+  /// on the tag as NDEF text or as an `attendancetracker://checkpoint?id=<id>` URI.
+  final List<String> nfcTags;
+
+  /// Static QR checkpoints: the exact QR content or the checkpoint id in its URI.
+  final List<String> qrCodes;
+
+  /// Secret for rotating QR codes (shown on a kiosk, see [AttendanceTracker.generateKioskQrCode]).
+  /// When null, only [qrCodes] are accepted.
+  final String? qrSecret;
+
+  /// Site id a rotating QR code must carry. When null, any site signed with [qrSecret] is accepted.
+  final String? qrSiteId;
+
+  /// How long one rotating QR code stays valid, in seconds.
+  final int qrStepSeconds;
+
+  /// How many steps before or after the current one are still accepted (clock drift).
+  final int qrDriftSteps;
+
+  /// How long an NFC tap or QR scan keeps the user in the zone when no other
+  /// sensor matches. 0 keeps it until the current shift ends.
+  final int checkpointValidityMinutes;
+
+  /// iOS only: keep a low-power location session running during the shift so
+  /// periodic scans continue while the app is in the background.
+  final bool iosContinuousTracking;
 
   /// The time when the shift starts (milliseconds from start of day).
   final int shiftStartMs;
@@ -31,7 +65,8 @@ class AttendanceConfig {
   /// How often to perform background scans (in seconds).
   final int scanIntervalSeconds;
 
-  /// Optional: A URL to hit for automatic check-in/check-out.
+  /// Optional: A URL that every attendance event is POSTed to as JSON, including
+  /// events recorded while the app is killed (iOS posts natively).
   final String? apiEndpoint;
 
   /// Optional: Headers for the API request.
@@ -72,6 +107,15 @@ class AttendanceConfig {
     this.bleDeviceNames = const [],
     this.bleMACs = const [],
     this.bleServiceUuids = const [],
+    this.iBeacons = const [],
+    this.nfcTags = const [],
+    this.qrCodes = const [],
+    this.qrSecret,
+    this.qrSiteId,
+    this.qrStepSeconds = 30,
+    this.qrDriftSteps = 1,
+    this.checkpointValidityMinutes = 60,
+    this.iosContinuousTracking = true,
     required this.shiftStartMs,
     required this.shiftEndMs,
     this.scanIntervalSeconds = 60,
@@ -91,6 +135,12 @@ class AttendanceConfig {
     this.exitDebounceCount = 3,
   });
 
+  bool get hasWifi => wifiSSIDs.isNotEmpty || wifiBSSIDs.isNotEmpty;
+  bool get hasBle => bleDeviceNames.isNotEmpty || bleMACs.isNotEmpty;
+  bool get hasBeacons => iBeacons.isNotEmpty;
+  bool get hasNfc => nfcTags.isNotEmpty;
+  bool get hasQr => qrCodes.isNotEmpty || (qrSecret != null && qrSecret!.isNotEmpty);
+
   Map<String, dynamic> toJson() {
     return {
       'officePoints': officePoints,
@@ -100,6 +150,15 @@ class AttendanceConfig {
       'bleDeviceNames': bleDeviceNames,
       'bleMACs': bleMACs,
       'bleServiceUuids': bleServiceUuids,
+      'iBeacons': iBeacons,
+      'nfcTags': nfcTags,
+      'qrCodes': qrCodes,
+      'qrSecret': qrSecret,
+      'qrSiteId': qrSiteId,
+      'qrStepSeconds': qrStepSeconds,
+      'qrDriftSteps': qrDriftSteps,
+      'checkpointValidityMinutes': checkpointValidityMinutes,
+      'iosContinuousTracking': iosContinuousTracking,
       'shiftStartMs': shiftStartMs,
       'shiftEndMs': shiftEndMs,
       'scanIntervalSeconds': scanIntervalSeconds,
@@ -129,6 +188,15 @@ class AttendanceConfig {
       bleDeviceNames: List<String>.from(json['bleDeviceNames'] ?? []),
       bleMACs: List<String>.from(json['bleMACs'] ?? []),
       bleServiceUuids: List<String>.from(json['bleServiceUuids'] ?? []),
+      iBeacons: List<String>.from(json['iBeacons'] ?? []),
+      nfcTags: List<String>.from(json['nfcTags'] ?? []),
+      qrCodes: List<String>.from(json['qrCodes'] ?? []),
+      qrSecret: json['qrSecret'],
+      qrSiteId: json['qrSiteId'],
+      qrStepSeconds: (json['qrStepSeconds'] as num?)?.toInt() ?? 30,
+      qrDriftSteps: (json['qrDriftSteps'] as num?)?.toInt() ?? 1,
+      checkpointValidityMinutes: (json['checkpointValidityMinutes'] as num?)?.toInt() ?? 60,
+      iosContinuousTracking: json['iosContinuousTracking'] ?? true,
       shiftStartMs: (json['shiftStartMs'] as num?)?.toInt() ?? 0,
       shiftEndMs: (json['shiftEndMs'] as num?)?.toInt() ?? 86399000,
       scanIntervalSeconds: (json['scanIntervalSeconds'] as num?)?.toInt() ?? 60,
@@ -163,4 +231,32 @@ class AttendanceConfig {
     }
     return null;
   }
+
+  /// Whether [now] falls inside the shift window.
+  bool isWithinShift(DateTime now) {
+    final currentMs = _msOfDay(now);
+    if (shiftStartMs <= shiftEndMs) {
+      return currentMs >= shiftStartMs && currentMs <= shiftEndMs;
+    }
+    // Shift spans across midnight (e.g., 22:00 to 06:00)
+    return currentMs >= shiftStartMs || currentMs <= shiftEndMs;
+  }
+
+  /// Start of the shift that contains [now] (or the most recent one).
+  DateTime currentShiftStart(DateTime now) {
+    final midnight = DateTime(now.year, now.month, now.day);
+    final todayStart = midnight.add(Duration(milliseconds: shiftStartMs));
+    return todayStart.isAfter(now) ? todayStart.subtract(const Duration(days: 1)) : todayStart;
+  }
+
+  /// Whether a checkpoint recorded at [checkpointAt] still proves presence at [now].
+  bool isCheckpointValid(DateTime checkpointAt, DateTime now) {
+    if (checkpointAt.isAfter(now.add(const Duration(minutes: 1)))) return false;
+    if (checkpointValidityMinutes > 0) {
+      return now.difference(checkpointAt) <= Duration(minutes: checkpointValidityMinutes);
+    }
+    return isWithinShift(now) && !checkpointAt.isBefore(currentShiftStart(now));
+  }
+
+  static int _msOfDay(DateTime t) => (t.hour * 3600000) + (t.minute * 60000) + (t.second * 1000) + t.millisecond;
 }
